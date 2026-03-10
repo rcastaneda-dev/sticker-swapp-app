@@ -1,6 +1,16 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_app/services/push_notification_service.dart';
 
-void main() {
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+
+  // ... existing Supabase init, etc.
+
+  final pushService = PushNotificationService(
+    appId: const String.fromEnvironment('ONESIGNAL_APP_ID'),
+  );
+  await pushService.initialize();
+
   runApp(const MyApp());
 }
 

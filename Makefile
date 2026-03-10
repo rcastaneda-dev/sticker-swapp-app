@@ -1,6 +1,5 @@
 dev:
-	cd supabase && supabase start
-	cd go_service && go run cmd/server/main.go
+	set -a && source .env && set +a && cd go_service && go run cmd/server/main.go
 
 test:
 	cd go_service && go test ./...

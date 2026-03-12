@@ -85,7 +85,13 @@ jobs:
         working-directory: mobile
 
       - name: Build Android AppBundle
-        run: flutter build appbundle --release --dart-define=ONESIGNAL_APP_ID=${{ secrets.ONESIGNAL_APP_ID }}
+        run: |
+          flutter build appbundle --release \
+            --dart-define=ONESIGNAL_APP_ID=${{ secrets.ONESIGNAL_APP_ID }} \
+            --dart-define=SUPABASE_URL=${{ secrets.SUPABASE_URL }} \
+            --dart-define=SUPABASE_ANON_KEY=${{ secrets.SUPABASE_ANON_KEY }} \
+            --dart-define=GOOGLE_WEB_CLIENT_ID=${{ secrets.GOOGLE_WEB_CLIENT_ID }} \
+            --dart-define=GOOGLE_IOS_CLIENT_ID=${{ secrets.GOOGLE_IOS_CLIENT_ID }}
         working-directory: mobile
 
       - name: Upload Android Artifact
@@ -138,7 +144,13 @@ jobs:
         working-directory: mobile
 
       - name: Build iOS IPA
-        run: flutter build ipa --release
+        run: |
+          flutter build ipa --release \
+            --dart-define=ONESIGNAL_APP_ID=${{ secrets.ONESIGNAL_APP_ID }} \
+            --dart-define=SUPABASE_URL=${{ secrets.SUPABASE_URL }} \
+            --dart-define=SUPABASE_ANON_KEY=${{ secrets.SUPABASE_ANON_KEY }} \
+            --dart-define=GOOGLE_WEB_CLIENT_ID=${{ secrets.GOOGLE_WEB_CLIENT_ID }} \
+            --dart-define=GOOGLE_IOS_CLIENT_ID=${{ secrets.GOOGLE_IOS_CLIENT_ID }}
         working-directory: mobile
 
       - name: Upload iOS Artifact

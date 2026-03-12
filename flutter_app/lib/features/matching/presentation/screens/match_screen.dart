@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'chat_screen.dart';
+import 'package:go_router/go_router.dart';
 
 class MatchScreen extends StatelessWidget {
 
@@ -15,14 +15,7 @@ class MatchScreen extends StatelessWidget {
         child: ElevatedButton(
           child: const Text("Open Chat"),
           onPressed: () {
-
-            Navigator.push(
-              context,
-              MaterialPageRoute(
-                builder: (_) => ChatScreen(matchId: matchId),
-              ),
-            );
-
+            context.goNamed('chat', pathParameters: {'matchId': matchId});
           },
         ),
       ),

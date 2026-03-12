@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import '../services/chat_service.dart';
+import 'package:flutter_app/features/chat/data/services/chat_service.dart';
 import 'package:ably_flutter/ably_flutter.dart';
 
 class ChatScreen extends StatefulWidget {

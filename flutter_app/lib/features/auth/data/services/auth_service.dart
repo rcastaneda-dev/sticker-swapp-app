@@ -39,22 +39,17 @@ class AuthService {
   // ── Email/Password ────────────────────────────────────────────────
 
   /// Sign up with email and password.
-  /// Sets `is_under_13` in user_metadata based on the provided date of birth.
+  /// Age verification is handled separately via [verifyAge] after signup.
   Future<AuthResponse> signUpWithEmail({
     required String email,
     required String password,
-    required DateTime dateOfBirth,
     String? displayName,
   }) async {
     try {
-      final isUnder13 = _calculateIsUnder13(dateOfBirth);
-
       return await _client.auth.signUp(
         email: email,
         password: password,
         data: {
-          'is_under_13': isUnder13,
-          'date_of_birth': dateOfBirth.toIso8601String(),
           // ignore: use_null_aware_elements
           if (displayName != null) 'display_name': displayName,
         },
@@ -203,17 +198,43 @@ class AuthService {
     }
   }
 
-  // ── Private Helpers ───────────────────────────────────────────────
+  // ── Age Verification ─────────────────────────────────────────────
 
-  bool _calculateIsUnder13(DateTime dateOfBirth) {
-    final now = DateTime.now();
-    int age = now.year - dateOfBirth.year;
-    if (now.month < dateOfBirth.month ||
-        (now.month == dateOfBirth.month && now.day < dateOfBirth.day)) {
-      age--;
+  /// Verify the user's age via server-side RPC.
+  ///
+  /// Calls `verify_age()` which calculates `is_under_13` on the server
+  /// (prevents client-side tampering) and stamps `age_verified_at`.
+  /// Also updates user metadata so the JWT reflects the verified state.
+  /// Throws [AuthException] if already verified or on failure.
+  Future<bool> verifyAge(DateTime dateOfBirth) async {
+    try {
+      final dobString =
+          '${dateOfBirth.year}-${dateOfBirth.month.toString().padLeft(2, '0')}-${dateOfBirth.day.toString().padLeft(2, '0')}';
+
+      final isUnder13 = await _client.rpc(
+        'verify_age',
+        params: {'p_date_of_birth': dobString},
+      ) as bool;
+
+      // Mirror to user metadata so the router and Go middleware can read
+      // the flags from the JWT without an extra DB query.
+      await _client.auth.updateUser(
+        UserAttributes(data: {
+          'is_under_13': isUnder13,
+          'date_of_birth': dobString,
+          'age_verified_at': DateTime.now().toUtc().toIso8601String(),
+        }),
+      );
+
+      return isUnder13;
+    } on PostgrestException catch (e) {
+      throw AuthException(AuthErrorType.unknown, e.message);
+    } catch (e) {
+      throw AuthException(AuthErrorType.unknown, e.toString());
     }
-    return age < 13;
   }
+
+  // ── Private Helpers ───────────────────────────────────────────────
 
   /// Cryptographically secure random nonce for Apple Sign-In.
   String _generateNonce([int length = 32]) {

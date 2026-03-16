@@ -34,8 +34,6 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
         await authService.signUpWithEmail(
           email: _emailController.text.trim(),
           password: _passwordController.text,
-          // TODO: Replace with DOB picker in onboarding flow
-          dateOfBirth: DateTime(2000, 1, 1),
         );
       } else {
         await authService.signInWithEmail(

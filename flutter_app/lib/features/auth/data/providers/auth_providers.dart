@@ -73,6 +73,16 @@ final isUnder13Provider = Provider<bool?>((ref) {
   return null;
 });
 
+/// Whether the current user has completed age verification.
+/// Returns null if unauthenticated, true/false if authenticated.
+final ageVerifiedProvider = Provider<bool?>((ref) {
+  final authState = ref.watch(authStateProvider);
+  if (authState is AuthAuthenticated) {
+    return authState.user.userMetadata?['age_verified_at'] != null;
+  }
+  return null;
+});
+
 /// Convenience provider: current user ID or null.
 final currentUserIdProvider = Provider<String?>((ref) {
   final authState = ref.watch(authStateProvider);

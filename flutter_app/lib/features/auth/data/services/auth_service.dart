@@ -234,6 +234,70 @@ class AuthService {
     }
   }
 
+  // ── Parental Consent ─────────────────────────────────────────────
+
+  /// Request parental consent by providing the parent's email.
+  ///
+  /// Calls `request_parental_consent()` RPC to generate a secure token,
+  /// then invokes the `send-consent-email` Edge Function to email the parent.
+  /// Updates user metadata with `parent_email` and `consent_requested_at`.
+  Future<void> requestParentalConsent({required String parentEmail}) async {
+    try {
+      final token = await _client.rpc(
+        'request_parental_consent',
+        params: {'p_parent_email': parentEmail},
+      ) as String;
+
+      final displayName =
+          _client.auth.currentUser?.userMetadata?['display_name'] as String? ??
+              _client.auth.currentUser?.userMetadata?['full_name'] as String? ??
+              'Your child';
+
+      await _client.functions.invoke(
+        'send-consent-email',
+        body: {
+          'parent_email': parentEmail,
+          'token': token,
+          'child_display_name': displayName,
+        },
+      );
+
+      await _client.auth.updateUser(
+        UserAttributes(data: {
+          'parent_email': parentEmail,
+          'consent_requested_at': DateTime.now().toUtc().toIso8601String(),
+        }),
+      );
+    } on PostgrestException catch (e) {
+      throw AuthException(AuthErrorType.unknown, e.message);
+    } on FunctionException catch (e) {
+      throw AuthException(
+        AuthErrorType.unknown,
+        e.details?.toString() ?? 'Failed to send consent email',
+      );
+    } catch (e) {
+      throw AuthException(AuthErrorType.unknown, e.toString());
+    }
+  }
+
+  /// Check if parental consent has been granted for the current user.
+  Future<bool> checkParentalConsent() async {
+    try {
+      final userId = _client.auth.currentUser?.id;
+      if (userId == null) return false;
+
+      final response = await _client
+          .from('user_profiles')
+          .select('parental_consent_at')
+          .eq('user_id', userId)
+          .single();
+
+      return response['parental_consent_at'] != null;
+    } catch (e) {
+      return false;
+    }
+  }
+
   // ── Private Helpers ───────────────────────────────────────────────
 
   /// Cryptographically secure random nonce for Apple Sign-In.

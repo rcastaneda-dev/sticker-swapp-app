@@ -91,3 +91,48 @@ final currentUserIdProvider = Provider<String?>((ref) {
   }
   return null;
 });
+
+/// Whether the current user has parental consent.
+/// Returns null if unauthenticated.
+final parentalConsentProvider = Provider<bool?>((ref) {
+  final authState = ref.watch(authStateProvider);
+  if (authState is AuthAuthenticated) {
+    return authState.user.userMetadata?['parental_consent_at'] != null;
+  }
+  return null;
+});
+
+/// Whether the current user needs parental consent to proceed.
+/// True only if: authenticated + age-verified + under-13 + no consent.
+final needsParentalConsentProvider = Provider<bool>((ref) {
+  final isUnder13 = ref.watch(isUnder13Provider);
+  final isAgeVerified = ref.watch(ageVerifiedProvider);
+  final hasConsent = ref.watch(parentalConsentProvider);
+
+  return isUnder13 == true && isAgeVerified == true && hasConsent != true;
+});
+
+/// Polls for parental consent every 30 seconds.
+/// When consent is detected, refreshes the session so the JWT reflects
+/// the updated metadata, then stops polling.
+final consentPollingProvider =
+    StreamProvider.autoDispose<bool>((ref) async* {
+  final authService = ref.watch(authServiceProvider);
+
+  // Initial check
+  final initial = await authService.checkParentalConsent();
+  yield initial;
+  if (initial) return;
+
+  // Poll every 30 seconds
+  await for (final _ in Stream.periodic(const Duration(seconds: 30))) {
+    final hasConsent = await authService.checkParentalConsent();
+    yield hasConsent;
+
+    if (hasConsent) {
+      // Refresh session so authStateProvider re-emits with updated metadata
+      await Supabase.instance.client.auth.refreshSession();
+      return;
+    }
+  }
+});

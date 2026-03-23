@@ -7,6 +7,7 @@ import 'package:flutter_app/features/auth/presentation/screens/age_verification_
 import 'package:flutter_app/features/auth/presentation/screens/parental_consent_screen.dart';
 import 'package:flutter_app/features/matching/presentation/screens/match_screen.dart';
 import 'package:flutter_app/features/chat/presentation/screens/chat_screen.dart';
+import 'package:flutter_app/features/stickers/presentation/screens/sticker_catalog_screen.dart';
 
 final routerProvider = Provider<GoRouter>((ref) {
   final authState = ref.watch(authStateProvider);
@@ -69,6 +70,11 @@ final routerProvider = Provider<GoRouter>((ref) {
         path: '/parental-consent',
         name: 'parental-consent',
         builder: (context, state) => const ParentalConsentScreen(),
+      ),
+      GoRoute(
+        path: '/catalog',
+        name: 'catalog',
+        builder: (context, state) => const StickerCatalogScreen(),
       ),
       GoRoute(
         path: '/matches',

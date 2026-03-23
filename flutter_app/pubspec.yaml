@@ -44,6 +44,8 @@ dependencies:
   sign_in_with_apple: ^7.0.1
   crypto: ^3.0.6
   cached_network_image: ^3.4.1
+  flutter_secure_storage: ^9.2.0
+  shared_preferences: ^2.3.0
 
 dev_dependencies:
   flutter_test:

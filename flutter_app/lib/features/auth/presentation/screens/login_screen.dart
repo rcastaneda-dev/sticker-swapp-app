@@ -1,5 +1,4 @@
-import 'dart:io';
-
+import 'package:flutter/foundation.dart' show defaultTargetPlatform, TargetPlatform;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_app/features/auth/data/providers/auth_providers.dart';
@@ -170,7 +169,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                 const SizedBox(height: SwappTokens.spacingMd),
 
                 // Apple Sign-In (iOS only per Apple guidelines)
-                if (Platform.isIOS)
+                if (defaultTargetPlatform == TargetPlatform.iOS)
                   SwappButton(
                     label: 'Continue with Apple',
                     variant: SwappButtonVariant.outlined,

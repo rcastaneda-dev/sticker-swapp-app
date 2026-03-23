@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_app/shared/shared.dart';
 import '../../data/models/sticker.dart';
 import '../../data/providers/sticker_providers.dart';
+import '../../data/providers/guest_inventory_providers.dart';
 
 class StickerCatalogScreen extends ConsumerWidget {
   const StickerCatalogScreen({super.key});
@@ -28,6 +29,7 @@ class StickerCatalogScreen extends ConsumerWidget {
       body: Column(
         children: [
           _FilterBar(filter: filter),
+          const _CollectionProgress(),
           Expanded(
             child: stickersAsync.when(
               data: (stickers) => stickers.isEmpty
@@ -317,6 +319,31 @@ class _TeamPickerSheetState extends State<_TeamPickerSheet> {
   }
 }
 
+// ── Collection Progress ─────────────────────────────────────────────
+
+class _CollectionProgress extends ConsumerWidget {
+  const _CollectionProgress();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final inventoryAsync = ref.watch(guestInventoryProvider);
+    final ownedCount = inventoryAsync.value?.length ?? 0;
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(
+        horizontal: SwappTokens.spacingLg,
+        vertical: SwappTokens.spacingXs,
+      ),
+      child: SwappProgressBar(
+        current: ownedCount,
+        total: 980,
+        label: 'Collection',
+        showPercentage: true,
+      ),
+    );
+  }
+}
+
 // ── Sticker Grid ────────────────────────────────────────────────────
 
 class _StickerGrid extends StatelessWidget {
@@ -377,49 +404,79 @@ class _StickerGrid extends StatelessWidget {
   }
 }
 
-class _StickerGridTile extends StatelessWidget {
+class _StickerGridTile extends ConsumerWidget {
   const _StickerGridTile({required this.sticker});
   final Sticker sticker;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final colorScheme = Theme.of(context).colorScheme;
     final textTheme = Theme.of(context).textTheme;
+    final inventoryAsync = ref.watch(guestInventoryProvider);
+    final isOwned = inventoryAsync.value?.contains(sticker.id) ?? false;
 
-    return SwappCard(
-      variant: SwappCardVariant.outlined,
-      padding: const EdgeInsets.all(SwappTokens.spacingXs),
-      child: Column(
-        children: [
-          Expanded(
-            child: SwappStickerImage(
-              stickerNumber: sticker.stickerNumber,
-              imageUrl: sticker.imageUrl,
-              team: sticker.team,
-              type: sticker.type,
-              size: StickerImageSize.thumbnail,
+    return GestureDetector(
+      onTap: () =>
+          ref.read(guestInventoryProvider.notifier).toggleSticker(sticker.id),
+      child: SwappCard(
+        variant: SwappCardVariant.outlined,
+        padding: const EdgeInsets.all(SwappTokens.spacingXs),
+        child: Stack(
+          children: [
+            Column(
+              children: [
+                Expanded(
+                  child: Opacity(
+                    opacity: isOwned ? 1.0 : 0.4,
+                    child: SwappStickerImage(
+                      stickerNumber: sticker.stickerNumber,
+                      imageUrl: sticker.imageUrl,
+                      team: sticker.team,
+                      type: sticker.type,
+                      size: StickerImageSize.thumbnail,
+                    ),
+                  ),
+                ),
+                const SizedBox(height: SwappTokens.spacingXs),
+                Text(
+                  '#${sticker.stickerNumber}',
+                  style: textTheme.labelSmall?.copyWith(
+                    fontWeight: FontWeight.bold,
+                    color: colorScheme.onSurface,
+                  ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+                Text(
+                  sticker.team ?? sticker.title,
+                  style: textTheme.labelSmall?.copyWith(
+                    color: colorScheme.onSurfaceVariant,
+                    fontSize: 9,
+                  ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ],
             ),
-          ),
-          const SizedBox(height: SwappTokens.spacingXs),
-          Text(
-            '#${sticker.stickerNumber}',
-            style: textTheme.labelSmall?.copyWith(
-              fontWeight: FontWeight.bold,
-              color: colorScheme.onSurface,
-            ),
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-          ),
-          Text(
-            sticker.team ?? sticker.title,
-            style: textTheme.labelSmall?.copyWith(
-              color: colorScheme.onSurfaceVariant,
-              fontSize: 9,
-            ),
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-          ),
-        ],
+            if (isOwned)
+              Positioned(
+                top: 2,
+                right: 2,
+                child: Container(
+                  decoration: BoxDecoration(
+                    color: colorScheme.tertiary,
+                    shape: BoxShape.circle,
+                  ),
+                  padding: const EdgeInsets.all(2),
+                  child: Icon(
+                    Icons.check,
+                    size: 12,
+                    color: colorScheme.onTertiary,
+                  ),
+                ),
+              ),
+          ],
+        ),
       ),
     );
   }

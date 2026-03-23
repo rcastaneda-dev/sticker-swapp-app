@@ -43,6 +43,8 @@ make migrate   # Reset Supabase local database
 - `match:{matchId}` — trade chat between matched users
 - `user:{userId}:notifications` — personal alerts (subscribe-only)
 
+**Guest mode:** Users can browse and track their 980-sticker collection locally without an account. Inventory is encrypted on-device via `flutter_secure_storage` (AES-256-GCM on native, localStorage on web). A first-launch flag ensures Keychain data does not persist after uninstall. On signup, local inventory migrates to the cloud.
+
 **Key policies:**
 - Age gating — under-13 users are blocked from chat (PRD §7.3)
 - Rate limiting — 120 req/min (authenticated), 30 req/min (guest)

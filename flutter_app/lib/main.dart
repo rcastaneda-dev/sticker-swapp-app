@@ -6,6 +6,8 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:flutter_app/core/services/attestation_service.dart';
 import 'package:flutter_app/core/services/attested_http_client.dart';
 import 'package:flutter_app/core/services/certificate_pinner.dart';
+import 'package:flutter_app/core/services/device_integrity_http_client.dart';
+import 'package:flutter_app/core/services/device_integrity_service.dart';
 import 'package:flutter_app/core/services/pinned_http_client.dart';
 import 'package:flutter_app/core/services/push_notification_service.dart';
 import 'package:flutter_app/features/stickers/data/services/guest_storage_service.dart';
@@ -14,8 +16,8 @@ import 'package:flutter_app/app.dart';
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // Certificate pinning + device attestation — dart:io only, skip on web.
-  // Client chain: AttestedHttpClient → PinnedHttpClient → http.Client()
+  // Security client chain — dart:io only, skip on web.
+  // AttestedHttpClient → DeviceIntegrityHttpClient → PinnedHttpClient → http.Client()
   http.Client? httpClient;
   if (!kIsWeb) {
     const gcpProjectNumber = int.fromEnvironment(
@@ -26,7 +28,16 @@ void main() async {
           gcpProjectNumber != 0 ? gcpProjectNumber : null,
     );
     final pinnedClient = PinnedHttpClient(http.Client(), CertificatePinner());
-    httpClient = AttestedHttpClient(pinnedClient, attestation);
+
+    // Root/jailbreak detection — check once at launch, cache for session.
+    final deviceIntegrity = DeviceIntegrityService();
+    await deviceIntegrity.isDeviceCompromised();
+    final integrityClient = DeviceIntegrityHttpClient(
+      pinnedClient,
+      deviceIntegrity,
+    );
+
+    httpClient = AttestedHttpClient(integrityClient, attestation);
   }
 
   await Supabase.initialize(

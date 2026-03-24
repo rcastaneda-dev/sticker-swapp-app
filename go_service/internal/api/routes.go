@@ -35,13 +35,25 @@ func NewRouter(cfg RouterConfig) chi.Router {
 	r.Get("/healthz", health.Check)
 
 	// Ably token auth — with full middleware chain
+	// Order: RateLimit → VerifyAttestation → ValidateJWT → ReadDeviceIntegrity → RequireAge13Plus
 	r.Route("/api/v1", func(r chi.Router) {
 		r.With(
 			middleware.RateLimit(120, 60),
 			middleware.VerifyAttestation(cfg.AttestationVerifier, cfg.AttestationDisabled),
 			middleware.ValidateJWT(cfg.SupabaseURL, cfg.SupabaseSecret),
+			middleware.ReadDeviceIntegrity(),
 			middleware.RequireAge13Plus(),
 		).Post("/ably/auth", cfg.AblyHandler.IssueToken)
+
+		// Future trade endpoints (Phase 3):
+		// r.With(
+		//     middleware.RateLimit(120, 60),
+		//     middleware.VerifyAttestation(cfg.AttestationVerifier, cfg.AttestationDisabled),
+		//     middleware.ValidateJWT(cfg.SupabaseURL, cfg.SupabaseSecret),
+		//     middleware.ReadDeviceIntegrity(),
+		//     middleware.RequireAge13Plus(),
+		//     middleware.TradeLimiter(middleware.DefaultTradeLimiterConfig()),
+		// ).Post("/trades", tradeHandler.Execute)
 	})
 
 	return r

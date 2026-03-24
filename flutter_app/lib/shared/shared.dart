@@ -7,4 +7,5 @@ export 'utils/team_colors.dart';
 export 'widgets/swapp_card.dart';
 export 'widgets/swapp_button.dart';
 export 'widgets/swapp_progress_bar.dart';
+export 'widgets/swapp_restricted_empty_state.dart';
 export 'widgets/swapp_sticker_image.dart';

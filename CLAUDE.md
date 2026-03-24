@@ -49,6 +49,8 @@ sticker-swapp-app/
 │   │   │   │   └── presentation/screens/
 │   │   │   └── matching/
 │   │   │       └── presentation/screens/
+│   │   │           ├── matches_screen.dart     # Main hub (under-13 guard)
+│   │   │           └── match_screen.dart       # Trade match (under-13 guard)
 │   │   └── shared/        # Cross-cutting widgets & utils
 │   │       ├── theme/
 │   │       │   ├── swapp_colors.dart      # Light & dark ColorScheme
@@ -59,7 +61,8 @@ sticker-swapp-app/
 │   │       ├── widgets/
 │   │       │   ├── swapp_card.dart         # Card (filled/elevated/outlined)
 │   │       │   ├── swapp_button.dart       # Button (primary/secondary/outlined)
-│   │       │   └── swapp_progress_bar.dart # Collection progress bar
+│   │       │   ├── swapp_progress_bar.dart # Collection progress bar
+│   │       │   └── swapp_restricted_empty_state.dart # Under-13 feature gate
 │   │       └── shared.dart                 # Barrel export
 │   └── test/
 ├── go_service/            # Backend trading engine
@@ -248,9 +251,10 @@ All tables require RLS policies. The `trade_audit_log` is append-only. Migration
 ### Age-Appropriate Safeguards (kept as good practice)
 
 - Under-13 users (`is_under_13` flag in Supabase user metadata):
-  - Blocked from chat (Go middleware returns 403)
+  - Blocked from chat (Go middleware returns 403 + Flutter screen-level guard)
   - Location features disabled
   - Wishlist-only mode (no real-time trading)
+  - **Flutter enforcement:** Screen-level guards via `isUnder13Provider` on `MatchesScreen`, `MatchScreen`, and `ChatScreen`. Each renders a `SwappRestrictedEmptyState` (reusable widget in `shared/widgets/`) instead of functional UI. ChatScreen also skips Ably WebSocket initialization for under-13 users.
 - Age verification at sign-up
 - Guest mode uses encrypted local storage (no server PII). On signup, local inventory is migrated via `migrate-guest-inventory` Edge Function (idempotent, no data loss).
 
@@ -339,6 +343,7 @@ Version auto-bumps: `1.0.${{ github.run_number }}`. Flutter version pinned in `.
 - `SwappCard` — `SwappCardVariant.filled|elevated|outlined`, supports `onTap`, custom `padding`
 - `SwappButton` — `SwappButtonVariant.primary|secondary|outlined`, `SwappButtonSize.small|medium|large`, `isLoading` state, optional `icon`
 - `SwappProgressBar` — `current`/`total` with animated bar, optional `label`, `showPercentage`
+- `SwappRestrictedEmptyState` — Centered empty state for feature-gated screens (`icon`, `title`, `subtitle`, optional `actionLabel`/`onAction`)
 
 **Theme mode:** Controlled by `themeModeProvider` (Riverpod `NotifierProvider<ThemeModeNotifier, ThemeMode>`). Defaults to `ThemeMode.system`. Toggle via `ref.read(themeModeProvider.notifier).toggle()`.
 

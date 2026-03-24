@@ -1,17 +1,20 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_app/features/auth/data/providers/auth_providers.dart';
 import 'package:flutter_app/features/chat/data/services/chat_service.dart';
+import 'package:flutter_app/shared/shared.dart';
 import 'package:ably_flutter/ably_flutter.dart';
 
-class ChatScreen extends StatefulWidget {
+class ChatScreen extends ConsumerStatefulWidget {
   final String matchId;
 
   const ChatScreen({super.key, required this.matchId});
 
   @override
-  State<ChatScreen> createState() => _ChatScreenState();
+  ConsumerState<ChatScreen> createState() => _ChatScreenState();
 }
 
-class _ChatScreenState extends State<ChatScreen> {
+class _ChatScreenState extends ConsumerState<ChatScreen> {
   final ChatService _chatService = ChatService();
   final TextEditingController _controller = TextEditingController();
 
@@ -20,7 +23,10 @@ class _ChatScreenState extends State<ChatScreen> {
   @override
   void initState() {
     super.initState();
-    _initChat();
+    final isUnder13 = ref.read(isUnder13Provider) ?? false;
+    if (!isUnder13) {
+      _initChat();
+    }
   }
 
   Future<void> _initChat() async {
@@ -45,13 +51,27 @@ class _ChatScreenState extends State<ChatScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final isUnder13 = ref.watch(isUnder13Provider) ?? false;
+
+    if (isUnder13) {
+      return Scaffold(
+        appBar: AppBar(title: const Text('Trade Chat')),
+        body: const SwappRestrictedEmptyState(
+          icon: Icons.chat_bubble_outline,
+          title: 'Chat Not Available',
+          subtitle:
+              'Messaging is available for users 13 and older. '
+              'Your safety comes first!',
+        ),
+      );
+    }
+
     return Scaffold(
       appBar: AppBar(
-        title: const Text("Trade Chat"),
+        title: const Text('Trade Chat'),
       ),
       body: Column(
         children: [
-
           /// Messages
           Expanded(
             child: ListView.builder(
@@ -69,21 +89,18 @@ class _ChatScreenState extends State<ChatScreen> {
             padding: const EdgeInsets.all(8.0),
             child: Row(
               children: [
-
                 Expanded(
                   child: TextField(
                     controller: _controller,
                     decoration: const InputDecoration(
-                      hintText: "Send a message...",
+                      hintText: 'Send a message...',
                     ),
                   ),
                 ),
-
                 IconButton(
                   icon: const Icon(Icons.send),
                   onPressed: _sendMessage,
                 ),
-
               ],
             ),
           ),

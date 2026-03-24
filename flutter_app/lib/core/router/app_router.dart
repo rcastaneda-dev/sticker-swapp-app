@@ -1,4 +1,3 @@
-import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:flutter_app/features/auth/data/providers/auth_providers.dart';
@@ -6,6 +5,7 @@ import 'package:flutter_app/features/auth/presentation/screens/login_screen.dart
 import 'package:flutter_app/features/auth/presentation/screens/age_verification_screen.dart';
 import 'package:flutter_app/features/auth/presentation/screens/parental_consent_screen.dart';
 import 'package:flutter_app/features/matching/presentation/screens/match_screen.dart';
+import 'package:flutter_app/features/matching/presentation/screens/matches_screen.dart';
 import 'package:flutter_app/features/chat/presentation/screens/chat_screen.dart';
 import 'package:flutter_app/features/stickers/presentation/screens/sticker_catalog_screen.dart';
 import 'package:flutter_app/features/stickers/presentation/screens/collection_progress_screen.dart';
@@ -92,9 +92,7 @@ final routerProvider = Provider<GoRouter>((ref) {
       GoRoute(
         path: '/matches',
         name: 'matches',
-        builder: (context, state) => const Scaffold(
-          body: Center(child: Text('Matches')),
-        ),
+        builder: (context, state) => const MatchesScreen(),
         routes: [
           GoRoute(
             path: ':matchId',

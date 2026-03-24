@@ -46,6 +46,7 @@ make migrate   # Reset Supabase local database
 **Guest mode:** Users can browse and track their 980-sticker collection locally without an account. Inventory is encrypted on-device via `flutter_secure_storage` (AES-256-GCM on native, localStorage on web). A first-launch flag ensures Keychain data does not persist after uninstall. On signup, local inventory migrates to the cloud.
 
 **Key policies:**
+- Certificate pinning — SPKI SHA-256 pins on Supabase and Go backend API calls (Dart-layer `PinnedHttpClient` + Android `network_security_config.xml`)
 - Age gating — under-13 users are blocked from chat (PRD §7.3)
 - Rate limiting — 120 req/min (authenticated), 30 req/min (guest)
 - PostGIS proximity queries for local match discovery

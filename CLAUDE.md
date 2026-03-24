@@ -26,6 +26,10 @@ sticker-swapp-app/
 │   │   ├── main.dart
 │   │   ├── app.dart
 │   │   ├── core/          # App-wide: router, services
+│   │   │   └── services/
+│   │   │       ├── certificate_pinner.dart    # SPKI SHA-256 pin validation
+│   │   │       ├── pinned_http_client.dart    # http.BaseClient with pinning
+│   │   │       └── push_notification_service.dart
 │   │   ├── features/      # Feature modules (auth, chat, matching, stickers)
 │   │   │   ├── auth/
 │   │   │   │   ├── data/
@@ -325,7 +329,7 @@ Version auto-bumps: `1.0.${{ github.run_number }}`. Flutter version pinned in `.
 
 ## Security
 
-- Certificate pinning on all API calls
+- Certificate pinning on all API calls (see Certificate Pinning section below)
 - App attestation (Play Integrity / DeviceCheck)
 - Root/jailbreak detection
 - Replay prevention (nonces)
@@ -333,6 +337,34 @@ Version auto-bumps: `1.0.${{ github.run_number }}`. Flutter version pinned in `.
 - OWASP Mobile Top 10 compliance
 - Trade idempotency keys to prevent replay attacks
 - Saga pattern with state machine for trade execution
+
+## Certificate Pinning
+
+**Method:** SPKI SHA-256 public key pinning (survives cert renewal if key pair stays the same).
+
+**Two layers:**
+1. **Dart layer (primary):** `PinnedHttpClient` wraps the `http.Client` passed to `Supabase.initialize()`. Before each request to a pinned domain, `CertificatePinner` opens a `SecureSocket`, extracts the leaf certificate's SubjectPublicKeyInfo via ASN.1 DER parsing (`asn1lib`), SHA-256 hashes it, and compares against pinned base64 hashes. Results are cached with a 5-minute TTL. Non-pinned domains pass through unchanged.
+2. **Android native (defense-in-depth):** `network_security_config.xml` with `<pin-set>` entries. Covers native HTTP traffic (e.g., Google Sign-In plugin) that bypasses Dart's BoringSSL stack.
+
+**Pinned domains:**
+- `hieuxypdjrdweznedjsm.supabase.co` — leaf + intermediate CA (Google Trust Services WE1)
+- Go backend (`api.stickerstadium.app`) — placeholder, add hashes when deployed
+
+**Key files:**
+- `flutter_app/lib/core/services/certificate_pinner.dart` — `CertificatePins` (pin store), `CertificatePinner` (validation + SPKI extraction), `CertificatePinningException`
+- `flutter_app/lib/core/services/pinned_http_client.dart` — `PinnedHttpClient extends http.BaseClient`
+- `flutter_app/android/app/src/main/res/xml/network_security_config.xml` — Android pin declarations
+- `flutter_app/lib/main.dart` — wires `PinnedHttpClient` into `Supabase.initialize(httpClient:)`, skipped on web (`kIsWeb`)
+
+**Updating pins:** Extract SPKI hash with:
+```bash
+openssl s_client -connect DOMAIN:443 -servername DOMAIN </dev/null 2>/dev/null \
+  | openssl x509 -pubkey -noout \
+  | openssl pkey -pubin -outform der \
+  | openssl dgst -sha256 -binary \
+  | base64
+```
+Update the hash sets in `CertificatePins.pins` (Dart) and `network_security_config.xml` (Android). Each domain should have at least 2 pins (leaf + backup/intermediate) to avoid lockout on cert rotation.
 
 ## Design System
 

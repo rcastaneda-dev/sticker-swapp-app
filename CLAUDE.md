@@ -27,6 +27,8 @@ sticker-swapp-app/
 │   │   ├── app.dart
 │   │   ├── core/          # App-wide: router, services
 │   │   │   └── services/
+│   │   │       ├── attestation_service.dart   # Play Integrity / App Attest tokens
+│   │   │       ├── attested_http_client.dart  # http.BaseClient with attestation headers
 │   │   │       ├── certificate_pinner.dart    # SPKI SHA-256 pin validation
 │   │   │       ├── pinned_http_client.dart    # http.BaseClient with pinning
 │   │   │       └── push_notification_service.dart
@@ -76,7 +78,8 @@ sticker-swapp-app/
 │   └── internal/
 │       ├── api/           # HTTP handlers & routes
 │       ├── ably/          # Token generation (HMAC-signed)
-│       ├── middleware/    # Auth, age gating, rate limiting
+│       ├── attestation/   # Play Integrity + App Attest verification
+│       ├── middleware/    # Auth, age gating, rate limiting, attestation
 │       ├── db/            # pgx connection pool
 │       ├── auth/          # (reserved)
 │       ├── matchmaking/   # (reserved)
@@ -224,10 +227,10 @@ Flutter (post-signup) → migrate-guest-inventory Edge Function → migrate_gues
 
 ## API Endpoints (Go Service)
 
-| Method | Path                | Auth   | Rate Limit | Description                    |
-|--------|---------------------|--------|------------|--------------------------------|
-| GET    | `/healthz`          | None   | None       | DB connectivity check          |
-| POST   | `/api/v1/ably/auth` | JWT    | 120/min    | Issue scoped Ably token        |
+| Method | Path                | Auth   | Attestation | Rate Limit | Description                    |
+|--------|---------------------|--------|-------------|------------|--------------------------------|
+| GET    | `/healthz`          | None   | None        | None       | DB connectivity check          |
+| POST   | `/api/v1/ably/auth` | JWT    | Required    | 120/min    | Issue scoped Ably token        |
 
 Rate limits: 120 req/min (authenticated), 30 req/min (guest). Returns 429 with `Retry-After: 60`.
 
@@ -285,6 +288,9 @@ SUPABASE_AUTH_EXTERNAL_GOOGLE_CLIENT_ID   # config.toml local dev
 SUPABASE_AUTH_EXTERNAL_GOOGLE_SECRET      # config.toml local dev
 SUPABASE_AUTH_EXTERNAL_APPLE_CLIENT_ID    # config.toml local dev
 SUPABASE_AUTH_EXTERNAL_APPLE_SECRET       # config.toml local dev
+GOOGLE_CLOUD_PROJECT_NUMBER               # Play Integrity token verification (Go .env + --dart-define)
+APPLE_APP_ID                              # App Attest verification, format: TEAMID.BUNDLEID (Go .env)
+ATTESTATION_DISABLED                      # Set to "true" to bypass attestation in dev (Go .env)
 ```
 
 Deployment secrets (GitHub Actions): `APPSTORE_CONNECT_*`, `PLAY_SERVICE_ACCOUNT_JSON`, `ANDROID_KEYSTORE*`, `IOS_CERTIFICATE*`, `PROVISIONING_PROFILE`, `GOOGLE_WEB_CLIENT_ID`, `GOOGLE_IOS_CLIENT_ID`.
@@ -330,7 +336,7 @@ Version auto-bumps: `1.0.${{ github.run_number }}`. Flutter version pinned in `.
 ## Security
 
 - Certificate pinning on all API calls (see Certificate Pinning section below)
-- App attestation (Play Integrity / DeviceCheck)
+- App attestation — Play Integrity (Android) + App Attest (iOS) (see App Attestation section below)
 - Root/jailbreak detection
 - Replay prevention (nonces)
 - RLS on all Supabase tables
@@ -354,7 +360,7 @@ Version auto-bumps: `1.0.${{ github.run_number }}`. Flutter version pinned in `.
 - `flutter_app/lib/core/services/certificate_pinner.dart` — `CertificatePins` (pin store), `CertificatePinner` (validation + SPKI extraction), `CertificatePinningException`
 - `flutter_app/lib/core/services/pinned_http_client.dart` — `PinnedHttpClient extends http.BaseClient`
 - `flutter_app/android/app/src/main/res/xml/network_security_config.xml` — Android pin declarations
-- `flutter_app/lib/main.dart` — wires `PinnedHttpClient` into `Supabase.initialize(httpClient:)`, skipped on web (`kIsWeb`)
+- `flutter_app/lib/main.dart` — wires `AttestedHttpClient` → `PinnedHttpClient` into `Supabase.initialize(httpClient:)`, skipped on web (`kIsWeb`)
 
 **Updating pins:** Extract SPKI hash with:
 ```bash
@@ -365,6 +371,40 @@ openssl s_client -connect DOMAIN:443 -servername DOMAIN </dev/null 2>/dev/null \
   | base64
 ```
 Update the hash sets in `CertificatePins.pins` (Dart) and `network_security_config.xml` (Android). Each domain should have at least 2 pins (leaf + backup/intermediate) to avoid lockout on cert rotation.
+
+## App Attestation
+
+**Method:** Play Integrity API (Android) + App Attest (iOS) — rejects requests from tampered, emulated, or non-genuine clients.
+
+**Flow:**
+```
+Flutter client
+  1. Generate platform attestation token via AttestationService
+  2. Attach X-Attestation-Token + X-Attestation-Platform headers
+  3. Send request with JWT + attestation headers
+
+Go backend (VerifyAttestation middleware)
+  1. Extract X-Attestation-Token and X-Attestation-Platform headers
+  2. Android: decode + verify Play Integrity token via Google API
+  3. iOS: verify App Attest assertion (CBOR decode, Apple cert chain)
+  4. Reject 403 ATTESTATION_FAILED if invalid
+```
+
+**Middleware chain order:** `RateLimit → VerifyAttestation → ValidateJWT → RequireAge13Plus`
+
+**Flutter HTTP client chain:** `AttestedHttpClient → PinnedHttpClient → http.Client()`
+
+**Android verification:** Go calls Google's `playintegrity.googleapis.com/v1/{projectNumber}:decodeIntegrityToken` endpoint. Requires `appRecognitionVerdict == "PLAY_RECOGNIZED"` and `deviceRecognitionVerdict` containing `"MEETS_DEVICE_INTEGRITY"`.
+
+**iOS verification:** CBOR-decodes the App Attest assertion, validates the x5c certificate chain against Apple's App Attestation Root CA, and checks authenticator data length.
+
+**Dev mode:** Set `ATTESTATION_DISABLED=true` in `.env` to bypass attestation during local development.
+
+**Key files:**
+- `flutter_app/lib/core/services/attestation_service.dart` — `AttestationService` wraps `app_device_integrity` plugin
+- `flutter_app/lib/core/services/attested_http_client.dart` — `AttestedHttpClient extends http.BaseClient`, attaches headers
+- `go_service/internal/attestation/attestation.go` — `Verifier` implements `IntegrityChecker` interface
+- `go_service/internal/middleware/attestation.go` — `VerifyAttestation` middleware function
 
 ## Design System
 

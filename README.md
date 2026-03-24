@@ -47,6 +47,7 @@ make migrate   # Reset Supabase local database
 
 **Key policies:**
 - Certificate pinning — SPKI SHA-256 pins on Supabase and Go backend API calls (Dart-layer `PinnedHttpClient` + Android `network_security_config.xml`)
+- App attestation — Play Integrity (Android) + App Attest (iOS) validated by Go middleware; rejects unverified clients with 403
 - Age gating — under-13 users are blocked from chat (PRD §7.3)
 - Rate limiting — 120 req/min (authenticated), 30 req/min (guest)
 - PostGIS proximity queries for local match discovery
@@ -74,3 +75,5 @@ GitHub Actions workflow (`.github/workflows/mobile-ci.yml`) runs on PRs and push
 | `IOS_CERTIFICATE` | iOS signing certificate (base64) |
 | `IOS_CERTIFICATE_PASSWORD` | Certificate password |
 | `PROVISIONING_PROFILE` | iOS provisioning profile (base64) |
+| `GOOGLE_CLOUD_PROJECT_NUMBER` | Play Integrity token verification |
+| `APPLE_APP_ID` | App Attest verification (TEAMID.BUNDLEID) |

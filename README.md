@@ -48,6 +48,7 @@ make migrate   # Reset Supabase local database
 **Key policies:**
 - Certificate pinning — SPKI SHA-256 pins on Supabase and Go backend API calls (Dart-layer `PinnedHttpClient` + Android `network_security_config.xml`)
 - App attestation — Play Integrity (Android) + App Attest (iOS) validated by Go middleware; rejects unverified clients with 403
+- Root/jailbreak detection — client-side via `safe_device`, flagged to Go via `X-Device-Integrity` header; compromised devices get reduced trade limits (5/hour vs 20/hour)
 - Age gating — under-13 users are blocked from chat (PRD §7.3)
 - Rate limiting — 120 req/min (authenticated), 30 req/min (guest)
 - PostGIS proximity queries for local match discovery

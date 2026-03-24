@@ -27,10 +27,12 @@ sticker-swapp-app/
 │   │   ├── app.dart
 │   │   ├── core/          # App-wide: router, services
 │   │   │   └── services/
-│   │   │       ├── attestation_service.dart   # Play Integrity / App Attest tokens
-│   │   │       ├── attested_http_client.dart  # http.BaseClient with attestation headers
-│   │   │       ├── certificate_pinner.dart    # SPKI SHA-256 pin validation
-│   │   │       ├── pinned_http_client.dart    # http.BaseClient with pinning
+│   │   │       ├── attestation_service.dart          # Play Integrity / App Attest tokens
+│   │   │       ├── attested_http_client.dart         # http.BaseClient with attestation headers
+│   │   │       ├── certificate_pinner.dart           # SPKI SHA-256 pin validation
+│   │   │       ├── device_integrity_service.dart     # Root/jailbreak detection (safe_device)
+│   │   │       ├── device_integrity_http_client.dart # http.BaseClient with X-Device-Integrity header
+│   │   │       ├── pinned_http_client.dart           # http.BaseClient with pinning
 │   │   │       └── push_notification_service.dart
 │   │   ├── features/      # Feature modules (auth, chat, matching, stickers)
 │   │   │   ├── auth/
@@ -79,7 +81,7 @@ sticker-swapp-app/
 │       ├── api/           # HTTP handlers & routes
 │       ├── ably/          # Token generation (HMAC-signed)
 │       ├── attestation/   # Play Integrity + App Attest verification
-│       ├── middleware/    # Auth, age gating, rate limiting, attestation
+│       ├── middleware/    # Auth, age gating, rate limiting, attestation, device integrity, trade limiting
 │       ├── db/            # pgx connection pool
 │       ├── auth/          # (reserved)
 │       ├── matchmaking/   # (reserved)
@@ -337,7 +339,7 @@ Version auto-bumps: `1.0.${{ github.run_number }}`. Flutter version pinned in `.
 
 - Certificate pinning on all API calls (see Certificate Pinning section below)
 - App attestation — Play Integrity (Android) + App Attest (iOS) (see App Attestation section below)
-- Root/jailbreak detection
+- Root/jailbreak detection with reduced trade limits (see Root/Jailbreak Detection section below)
 - Replay prevention (nonces)
 - RLS on all Supabase tables
 - OWASP Mobile Top 10 compliance
@@ -360,7 +362,7 @@ Version auto-bumps: `1.0.${{ github.run_number }}`. Flutter version pinned in `.
 - `flutter_app/lib/core/services/certificate_pinner.dart` — `CertificatePins` (pin store), `CertificatePinner` (validation + SPKI extraction), `CertificatePinningException`
 - `flutter_app/lib/core/services/pinned_http_client.dart` — `PinnedHttpClient extends http.BaseClient`
 - `flutter_app/android/app/src/main/res/xml/network_security_config.xml` — Android pin declarations
-- `flutter_app/lib/main.dart` — wires `AttestedHttpClient` → `PinnedHttpClient` into `Supabase.initialize(httpClient:)`, skipped on web (`kIsWeb`)
+- `flutter_app/lib/main.dart` — wires `AttestedHttpClient` → `DeviceIntegrityHttpClient` → `PinnedHttpClient` into `Supabase.initialize(httpClient:)`, skipped on web (`kIsWeb`)
 
 **Updating pins:** Extract SPKI hash with:
 ```bash
@@ -390,9 +392,9 @@ Go backend (VerifyAttestation middleware)
   4. Reject 403 ATTESTATION_FAILED if invalid
 ```
 
-**Middleware chain order:** `RateLimit → VerifyAttestation → ValidateJWT → RequireAge13Plus`
+**Middleware chain order:** `RateLimit → VerifyAttestation → ValidateJWT → ReadDeviceIntegrity → RequireAge13Plus`
 
-**Flutter HTTP client chain:** `AttestedHttpClient → PinnedHttpClient → http.Client()`
+**Flutter HTTP client chain:** `AttestedHttpClient → DeviceIntegrityHttpClient → PinnedHttpClient → http.Client()`
 
 **Android verification:** Go calls Google's `playintegrity.googleapis.com/v1/{projectNumber}:decodeIntegrityToken` endpoint. Requires `appRecognitionVerdict == "PLAY_RECOGNIZED"` and `deviceRecognitionVerdict` containing `"MEETS_DEVICE_INTEGRITY"`.
 
@@ -405,6 +407,26 @@ Go backend (VerifyAttestation middleware)
 - `flutter_app/lib/core/services/attested_http_client.dart` — `AttestedHttpClient extends http.BaseClient`, attaches headers
 - `go_service/internal/attestation/attestation.go` — `Verifier` implements `IntegrityChecker` interface
 - `go_service/internal/middleware/attestation.go` — `VerifyAttestation` middleware function
+
+## Root/Jailbreak Detection
+
+**Method:** Client-side detection via `safe_device` package (Android: su binary, Magisk, test-keys; iOS: Cydia, sandbox escape, writable system paths). This is an untrusted advisory signal — defense-in-depth alongside attestation.
+
+**Client-side:** `DeviceIntegrityService` checks once at app launch and caches the result for the session lifetime. `DeviceIntegrityHttpClient` attaches `X-Device-Integrity: compromised|clean` header to all requests. Header omitted when detection is unavailable (web, exception).
+
+**Server-side:** `ReadDeviceIntegrity` middleware reads the header and sets a `deviceCompromised` boolean in request context. Logs `slog.Warn` with user ID, IP, path, method for analytics when compromised. Never blocks — only sets context for downstream handlers.
+
+**Trade limits** (via `TradeLimiter` middleware, applied to future trade endpoints):
+- Normal devices: 20 trades/hour
+- Compromised devices: 5 trades/hour
+
+Returns 429 `TRADE_LIMIT_EXCEEDED` with `Retry-After` when exceeded.
+
+**Key files:**
+- `flutter_app/lib/core/services/device_integrity_service.dart` — `DeviceIntegrityService` with injectable check functions
+- `flutter_app/lib/core/services/device_integrity_http_client.dart` — `DeviceIntegrityHttpClient extends http.BaseClient`
+- `go_service/internal/middleware/device_integrity.go` — `ReadDeviceIntegrity` middleware
+- `go_service/internal/middleware/trade_limiter.go` — `TradeLimiter` middleware with `TradeLimiterConfig`
 
 ## Design System
 

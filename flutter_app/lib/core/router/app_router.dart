@@ -23,6 +23,11 @@ final routerProvider = Provider<GoRouter>((ref) {
       final isLoginRoute = loc == '/login';
       final isAgeVerificationRoute = loc == '/age-verification';
       final isConsentRoute = loc == '/parental-consent';
+      final isCatalogRoute =
+          loc == '/catalog' || loc.startsWith('/catalog/');
+
+      // Guest users may browse the catalog without logging in
+      if (!isAuth && isCatalogRoute) return null;
 
       // Not logged in → login screen
       if (!isAuth && !isLoginRoute) return '/login';

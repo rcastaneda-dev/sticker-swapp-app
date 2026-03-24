@@ -128,7 +128,10 @@ JWT expiry: 15 min (900s in config.toml) with refresh token rotation (10s reuse 
 
 **Parental consent gate (under-13):** After age verification identifies a user as under-13, the router checks `needsParentalConsentProvider` and redirects to `/parental-consent`. The user enters their parent's email, which triggers `request_parental_consent()` RPC (generates a cryptographic token, 7-day expiry) and the `send-consent-email` Edge Function. The parent receives an email with a link to the `confirm-consent` Edge Function (web page). On confirmation, `confirm_parental_consent()` RPC stamps `parental_consent_at` on `user_profiles` and mirrors it to user metadata. The Flutter screen polls every 30s and auto-navigates on consent. Both `parental_consent_at` and `parent_email` are immutable once set (enforced by the `prevent_under13_mutation()` trigger extended in migration `0010`).
 
+**Login screen** (`/login`): `ConsumerStatefulWidget` with three auth methods — email/password, Google (native), Apple (iOS only). Per-method loading states (email, Google, Apple independent). `Form` with validation (email format regex, password required, 6-char minimum on sign-up). Sign-in/sign-up toggle, display name field in sign-up mode, password visibility toggle, forgot password flow (`resetPassword`), and "Continue as Guest" link to `/catalog`.
+
 **Router redirect logic:**
+0. Not authenticated + on `/catalog` or `/catalog/*` → allowed (guest browsing)
 1. Not authenticated → `/login`
 2. Authenticated + not age-verified → `/age-verification`
 3. Authenticated + age-verified + under-13 + no parental consent → `/parental-consent`

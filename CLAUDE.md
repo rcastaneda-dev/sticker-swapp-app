@@ -30,8 +30,10 @@ sticker-swapp-app/
 │   │   │   ├── auth/
 │   │   │   │   ├── data/
 │   │   │   │   │   ├── services/auth_service.dart
-│   │   │   │   │   └── providers/auth_providers.dart
+│   │   │   │   │   ├── providers/auth_providers.dart
+│   │   │   │   │   └── providers/guest_migration_providers.dart
 │   │   │   │   ├── presentation/screens/login_screen.dart
+│   │   │   │   ├── presentation/screens/guest_migration_screen.dart
 │   │   │   │   └── auth.dart              # Barrel export
 │   │   │   ├── stickers/
 │   │   │   │   ├── data/
@@ -133,12 +135,15 @@ JWT expiry: 15 min (900s in config.toml) with refresh token rotation (10s reuse 
 
 **Login screen** (`/login`): `ConsumerStatefulWidget` with three auth methods — email/password, Google (native), Apple (iOS only). Per-method loading states (email, Google, Apple independent). `Form` with validation (email format regex, password required, 6-char minimum on sign-up). Sign-in/sign-up toggle, display name field in sign-up mode, password visibility toggle, forgot password flow (`resetPassword`), and "Continue as Guest" link to `/catalog`.
 
+**Guest migration screen** (`/guest-migration`): After age verification, if the user has local guest inventory, the router redirects to `/guest-migration`. Four states: prompt (shows sticker count, Transfer/Skip), migrating (progress indicator), success (items written count, Continue), error (message, Retry/Skip). Calls `migrateGuestInventory()` on `AuthService` which invokes the `migrate-guest-inventory` Edge Function. On success, clears local inventory. On skip or completion, `guestMigrationCompleteProvider` advances the router. Device UUID for idempotency is generated via `GuestStorageService.getOrCreateDeviceUuid()` (UUID v4, persisted in secure storage).
+
 **Router redirect logic:**
 0. Not authenticated + on `/catalog` or `/catalog/*` → allowed (guest browsing)
 1. Not authenticated → `/login`
 2. Authenticated + not age-verified → `/age-verification`
-3. Authenticated + age-verified + under-13 + no parental consent → `/parental-consent`
-4. Authenticated + age-verified + (13+ OR has parental consent) → `/matches` (main app)
+3. Authenticated + age-verified + has local guest inventory + migration not complete → `/guest-migration`
+4. Authenticated + age-verified + under-13 + no parental consent → `/parental-consent`
+5. Authenticated + age-verified + (13+ OR has parental consent) → `/matches` (main app)
 
 ## Sticker Catalog
 

@@ -280,6 +280,53 @@ class AuthService {
     }
   }
 
+  // ── Guest Inventory Migration ───────────────────────────────────
+
+  /// Migrate guest sticker inventory to the authenticated user's account.
+  ///
+  /// Calls the `migrate-guest-inventory` Edge Function which validates and
+  /// delegates to the `migrate_guest_inventory()` RPC. Idempotent — repeat
+  /// calls with the same [deviceUuid] return the previous result.
+  Future<({int itemsSent, int itemsWritten, bool alreadyMigrated})>
+      migrateGuestInventory({
+    required String deviceUuid,
+    required List<Map<String, dynamic>> items,
+  }) async {
+    try {
+      final response = await _client.functions.invoke(
+        'migrate-guest-inventory',
+        body: {
+          'device_uuid': deviceUuid,
+          'items': items,
+        },
+      );
+
+      final data = response.data as Map<String, dynamic>;
+
+      if (data['success'] != true) {
+        throw AuthException(
+          AuthErrorType.unknown,
+          data['error'] as String? ?? 'Migration failed',
+        );
+      }
+
+      return (
+        itemsSent: data['items_sent'] as int,
+        itemsWritten: data['items_written'] as int,
+        alreadyMigrated: data['already_migrated'] as bool? ?? false,
+      );
+    } on AuthException {
+      rethrow;
+    } on FunctionException catch (e) {
+      throw AuthException(
+        AuthErrorType.unknown,
+        e.details?.toString() ?? 'Migration failed',
+      );
+    } catch (e) {
+      throw AuthException(AuthErrorType.unknown, e.toString());
+    }
+  }
+
   /// Check if parental consent has been granted for the current user.
   Future<bool> checkParentalConsent() async {
     try {

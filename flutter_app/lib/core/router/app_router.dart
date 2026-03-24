@@ -1,9 +1,11 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:flutter_app/features/auth/data/providers/auth_providers.dart';
+import 'package:flutter_app/features/auth/data/providers/guest_migration_providers.dart';
 import 'package:flutter_app/features/auth/presentation/screens/login_screen.dart';
 import 'package:flutter_app/features/auth/presentation/screens/age_verification_screen.dart';
 import 'package:flutter_app/features/auth/presentation/screens/parental_consent_screen.dart';
+import 'package:flutter_app/features/auth/presentation/screens/guest_migration_screen.dart';
 import 'package:flutter_app/features/matching/presentation/screens/match_screen.dart';
 import 'package:flutter_app/features/matching/presentation/screens/matches_screen.dart';
 import 'package:flutter_app/features/chat/presentation/screens/chat_screen.dart';
@@ -14,6 +16,7 @@ final routerProvider = Provider<GoRouter>((ref) {
   final authState = ref.watch(authStateProvider);
   final isAgeVerified = ref.watch(ageVerifiedProvider) ?? false;
   final needsConsent = ref.watch(needsParentalConsentProvider);
+  final needsMigration = ref.watch(needsGuestMigrationProvider);
 
   return GoRouter(
     initialLocation: '/matches',
@@ -22,6 +25,7 @@ final routerProvider = Provider<GoRouter>((ref) {
       final loc = state.matchedLocation;
       final isLoginRoute = loc == '/login';
       final isAgeVerificationRoute = loc == '/age-verification';
+      final isMigrationRoute = loc == '/guest-migration';
       final isConsentRoute = loc == '/parental-consent';
       final isCatalogRoute =
           loc == '/catalog' || loc.startsWith('/catalog/');
@@ -35,6 +39,7 @@ final routerProvider = Provider<GoRouter>((ref) {
       // Logged in + on login → move to next required step
       if (isAuth && isLoginRoute) {
         if (!isAgeVerified) return '/age-verification';
+        if (needsMigration) return '/guest-migration';
         if (needsConsent) return '/parental-consent';
         return '/matches';
       }
@@ -46,6 +51,17 @@ final routerProvider = Provider<GoRouter>((ref) {
 
       // Logged in + verified + on verification screen → move forward
       if (isAuth && isAgeVerified && isAgeVerificationRoute) {
+        if (needsMigration) return '/guest-migration';
+        return needsConsent ? '/parental-consent' : '/matches';
+      }
+
+      // Logged in + verified + needs migration + not on migration screen
+      if (isAuth && isAgeVerified && needsMigration && !isMigrationRoute) {
+        return '/guest-migration';
+      }
+
+      // Logged in + verified + migration done + on migration screen → advance
+      if (isAuth && isAgeVerified && !needsMigration && isMigrationRoute) {
         return needsConsent ? '/parental-consent' : '/matches';
       }
 
@@ -71,6 +87,11 @@ final routerProvider = Provider<GoRouter>((ref) {
         path: '/age-verification',
         name: 'age-verification',
         builder: (context, state) => const AgeVerificationScreen(),
+      ),
+      GoRoute(
+        path: '/guest-migration',
+        name: 'guest-migration',
+        builder: (context, state) => const GuestMigrationScreen(),
       ),
       GoRoute(
         path: '/parental-consent',

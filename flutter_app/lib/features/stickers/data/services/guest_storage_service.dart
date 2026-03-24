@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:math';
 
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -14,6 +15,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 class GuestStorageService {
   static const _inventoryKey = 'guest_owned_stickers';
   static const _firstLaunchKey = 'guest_storage_initialized';
+  static const _deviceUuidKey = 'guest_device_uuid';
 
   final FlutterSecureStorage _secure;
   final SharedPreferencesAsync _prefs;
@@ -59,5 +61,29 @@ class GuestStorageService {
   /// Remove all guest inventory data.
   Future<void> clearInventory() async {
     await _secure.delete(key: _inventoryKey);
+  }
+
+  /// Returns the persistent device UUID, creating one if it doesn't exist.
+  ///
+  /// Used as the idempotency key for guest-to-member inventory migration.
+  Future<String> getOrCreateDeviceUuid() async {
+    final existing = await _secure.read(key: _deviceUuidKey);
+    if (existing != null && existing.isNotEmpty) return existing;
+
+    final uuid = _generateUuidV4();
+    await _secure.write(key: _deviceUuidKey, value: uuid);
+    return uuid;
+  }
+
+  /// Generates a RFC 4122 version 4 UUID using a cryptographic RNG.
+  static String _generateUuidV4() {
+    final random = Random.secure();
+    final bytes = List<int>.generate(16, (_) => random.nextInt(256));
+    bytes[6] = (bytes[6] & 0x0f) | 0x40; // version 4
+    bytes[8] = (bytes[8] & 0x3f) | 0x80; // variant 1
+    final hex = bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+    return '${hex.substring(0, 8)}-${hex.substring(8, 12)}-'
+        '${hex.substring(12, 16)}-${hex.substring(16, 20)}-'
+        '${hex.substring(20)}';
   }
 }

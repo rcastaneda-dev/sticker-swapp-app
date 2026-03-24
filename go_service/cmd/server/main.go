@@ -6,11 +6,13 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/wc2026-stickers/sticker-swap-app/go_service/internal/ably"
 	"github.com/wc2026-stickers/sticker-swap-app/go_service/internal/api"
+	"github.com/wc2026-stickers/sticker-swap-app/go_service/internal/attestation"
 	"github.com/wc2026-stickers/sticker-swap-app/go_service/internal/db"
 )
 
@@ -43,11 +45,22 @@ func main() {
 	// Build handler dependencies
 	tokenHandler := ably.NewTokenHandler(ablyCfg)
 
+	// Attestation verifier — optional env vars for dev flexibility
+	googleProjectNumber := os.Getenv("GOOGLE_CLOUD_PROJECT_NUMBER")
+	appleAppID := os.Getenv("APPLE_APP_ID")
+	attestationDisabled := strings.EqualFold(os.Getenv("ATTESTATION_DISABLED"), "true")
+	if attestationDisabled {
+		log.Println("WARNING: Attestation verification is DISABLED (dev mode)")
+	}
+	attVerifier := attestation.NewVerifier(googleProjectNumber, appleAppID)
+
 	router := api.NewRouter(api.RouterConfig{
-		Pool:           pool,
-		AblyHandler:    tokenHandler,
-		SupabaseURL:    ablyCfg.SupabaseURL,
-		SupabaseSecret: ablyCfg.SupabaseSecret,
+		Pool:                pool,
+		AblyHandler:         tokenHandler,
+		SupabaseURL:         ablyCfg.SupabaseURL,
+		SupabaseSecret:      ablyCfg.SupabaseSecret,
+		AttestationVerifier: attVerifier,
+		AttestationDisabled: attestationDisabled,
 	})
 
 	// Start HTTP server

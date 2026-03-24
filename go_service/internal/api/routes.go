@@ -6,15 +6,18 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/wc2026-stickers/sticker-swap-app/go_service/internal/ably"
+	"github.com/wc2026-stickers/sticker-swap-app/go_service/internal/attestation"
 	"github.com/wc2026-stickers/sticker-swap-app/go_service/internal/middleware"
 )
 
 // RouterConfig holds all dependencies needed to register routes.
 type RouterConfig struct {
-	Pool           *pgxpool.Pool
-	AblyHandler    *ably.TokenHandler
-	SupabaseURL    string
-	SupabaseSecret string
+	Pool                 *pgxpool.Pool
+	AblyHandler          *ably.TokenHandler
+	SupabaseURL          string
+	SupabaseSecret       string
+	AttestationVerifier  attestation.IntegrityChecker
+	AttestationDisabled  bool
 }
 
 // NewRouter constructs a Chi router with all routes and middleware.
@@ -35,6 +38,7 @@ func NewRouter(cfg RouterConfig) chi.Router {
 	r.Route("/api/v1", func(r chi.Router) {
 		r.With(
 			middleware.RateLimit(120, 60),
+			middleware.VerifyAttestation(cfg.AttestationVerifier, cfg.AttestationDisabled),
 			middleware.ValidateJWT(cfg.SupabaseURL, cfg.SupabaseSecret),
 			middleware.RequireAge13Plus(),
 		).Post("/ably/auth", cfg.AblyHandler.IssueToken)

@@ -8,6 +8,7 @@ import 'package:flutter_app/features/auth/presentation/screens/parental_consent_
 import 'package:flutter_app/features/matching/presentation/screens/match_screen.dart';
 import 'package:flutter_app/features/chat/presentation/screens/chat_screen.dart';
 import 'package:flutter_app/features/stickers/presentation/screens/sticker_catalog_screen.dart';
+import 'package:flutter_app/features/stickers/presentation/screens/collection_progress_screen.dart';
 
 final routerProvider = Provider<GoRouter>((ref) {
   final authState = ref.watch(authStateProvider);
@@ -75,6 +76,13 @@ final routerProvider = Provider<GoRouter>((ref) {
         path: '/catalog',
         name: 'catalog',
         builder: (context, state) => const StickerCatalogScreen(),
+        routes: [
+          GoRoute(
+            path: 'progress',
+            name: 'collection-progress',
+            builder: (context, state) => const CollectionProgressScreen(),
+          ),
+        ],
       ),
       GoRoute(
         path: '/matches',

@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 import 'package:flutter_app/shared/shared.dart';
 import '../../data/models/sticker.dart';
 import '../../data/providers/sticker_providers.dart';
@@ -17,6 +18,11 @@ class StickerCatalogScreen extends ConsumerWidget {
       appBar: AppBar(
         title: const Text('Sticker Catalog'),
         actions: [
+          IconButton(
+            icon: const Icon(Icons.bar_chart_rounded),
+            tooltip: 'Collection progress',
+            onPressed: () => context.push('/catalog/progress'),
+          ),
           if (filter.team != null || filter.type != null)
             IconButton(
               icon: const Icon(Icons.clear_all),

@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Defense-in-depth certificate pinning for native HTTP traffic
+  (Google Sign-In, etc.). Flutter's Dart HTTP uses BoringSSL and
+  does NOT respect this config — the Dart-layer PinnedHttpClient
+  handles pinning for Supabase SDK calls.
+
+  Extract pins:
+    openssl s_client -connect DOMAIN:443 -servername DOMAIN </dev/null 2>/dev/null \
+      | openssl x509 -pubkey -noout \
+      | openssl pkey -pubin -outform der \
+      | openssl dgst -sha256 -binary \
+      | base64
+-->
+<network-security-config>
+    <!-- Supabase project -->
+    <domain-config>
+        <domain includeSubdomains="true">hieuxypdjrdweznedjsm.supabase.co</domain>
+        <pin-set expiration="2027-06-11">
+            <!-- leaf -->
+            <pin digest="SHA-256">GU2W4j1P24T3sqlI+o6YTnidzz0PI8fB/Gvd2ITfSZE=</pin>
+            <!-- intermediate CA (Google Trust Services WE1) -->
+            <pin digest="SHA-256">kIdp6NNEd8wsugYyyIYFsi1ylMCED3hZbSR8ZFsa/A4=</pin>
+        </pin-set>
+    </domain-config>
+
+    <!-- Go trading engine — uncomment when deployed
+    <domain-config>
+        <domain includeSubdomains="false">api.stickerstadium.app</domain>
+        <pin-set expiration="2027-06-11">
+            <pin digest="SHA-256">LEAF_HASH_HERE</pin>
+            <pin digest="SHA-256">BACKUP_HASH_HERE</pin>
+        </pin-set>
+    </domain-config>
+    -->
+</network-security-config>

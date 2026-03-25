@@ -7,6 +7,7 @@ import (
 
 	"github.com/wc2026-stickers/sticker-swap-app/go_service/internal/ably"
 	"github.com/wc2026-stickers/sticker-swap-app/go_service/internal/attestation"
+	"github.com/wc2026-stickers/sticker-swap-app/go_service/internal/matchmaking"
 	"github.com/wc2026-stickers/sticker-swap-app/go_service/internal/middleware"
 )
 
@@ -18,6 +19,8 @@ type RouterConfig struct {
 	SupabaseSecret       string
 	AttestationVerifier  attestation.IntegrityChecker
 	AttestationDisabled  bool
+	Scorer               matchmaking.Scorer
+	MatchCache           *matchmaking.Cache
 }
 
 // NewRouter constructs a Chi router with all routes and middleware.
@@ -44,6 +47,16 @@ func NewRouter(cfg RouterConfig) chi.Router {
 			middleware.ReadDeviceIntegrity(),
 			middleware.RequireAge13Plus(),
 		).Post("/ably/auth", cfg.AblyHandler.IssueToken)
+
+		// Matchmaking — discover and score nearby traders
+		matchHandler := NewMatchmakingHandler(cfg.Scorer, cfg.MatchCache)
+		r.With(
+			middleware.RateLimit(120, 60),
+			middleware.VerifyAttestation(cfg.AttestationVerifier, cfg.AttestationDisabled),
+			middleware.ValidateJWT(cfg.SupabaseURL, cfg.SupabaseSecret),
+			middleware.ReadDeviceIntegrity(),
+			middleware.RequireAge13Plus(),
+		).Get("/matches", matchHandler.ListMatches)
 
 		// Future trade endpoints (Phase 3):
 		// r.With(

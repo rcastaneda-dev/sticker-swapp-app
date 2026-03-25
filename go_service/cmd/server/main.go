@@ -14,6 +14,7 @@ import (
 	"github.com/wc2026-stickers/sticker-swap-app/go_service/internal/api"
 	"github.com/wc2026-stickers/sticker-swap-app/go_service/internal/attestation"
 	"github.com/wc2026-stickers/sticker-swap-app/go_service/internal/db"
+	"github.com/wc2026-stickers/sticker-swap-app/go_service/internal/matchmaking"
 )
 
 func main() {
@@ -54,6 +55,11 @@ func main() {
 	}
 	attVerifier := attestation.NewVerifier(googleProjectNumber, appleAppID)
 
+	// Initialize matchmaking engine
+	matchScorer := matchmaking.NewScorer(pool, matchmaking.DefaultConfig())
+	matchCache := matchmaking.NewCache(matchmaking.DefaultCacheConfig())
+	defer matchCache.Stop()
+
 	router := api.NewRouter(api.RouterConfig{
 		Pool:                pool,
 		AblyHandler:         tokenHandler,
@@ -61,6 +67,8 @@ func main() {
 		SupabaseSecret:      ablyCfg.SupabaseSecret,
 		AttestationVerifier: attVerifier,
 		AttestationDisabled: attestationDisabled,
+		Scorer:              matchScorer,
+		MatchCache:          matchCache,
 	})
 
 	// Start HTTP server

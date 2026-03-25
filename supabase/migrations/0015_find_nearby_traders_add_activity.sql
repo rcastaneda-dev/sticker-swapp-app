@@ -3,11 +3,12 @@
 -- user activity — actively trading users update their location frequently.
 -- The Go matchmaking scoring engine uses this for the Activity sub-score.
 --
--- This is a backward-compatible change: the function signature (input
--- parameters) is unchanged; only the return table gains one column.
--- Existing callers that do not read the new column are unaffected.
+-- PostgreSQL does not allow CREATE OR REPLACE to change the return type
+-- of an existing function, so we must DROP + CREATE.
 
-create or replace function find_nearby_traders(
+drop function if exists find_nearby_traders(double precision, double precision, int);
+
+create function find_nearby_traders(
   lat       double precision,
   lng       double precision,
   radius_m  int default 5000       -- 5 km default
@@ -70,8 +71,7 @@ begin
 end;
 $$;
 
--- Re-grant permissions (CREATE OR REPLACE preserves them, but explicit
--- grants are clearer for reviewers)
+-- Restore permissions (DROP removed them)
 revoke all on function find_nearby_traders(double precision, double precision, int) from public;
 revoke all on function find_nearby_traders(double precision, double precision, int) from anon;
 grant execute on function find_nearby_traders(double precision, double precision, int) to authenticated;

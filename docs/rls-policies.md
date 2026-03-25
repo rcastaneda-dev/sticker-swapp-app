@@ -46,7 +46,9 @@ The Go matchmaking engine queries via `service_role` which bypasses RLS.
 | UPDATE | `users_update_own_inventory` | `auth.uid() = user_id` | all |
 | DELETE | `users_delete_own_inventory` | `auth.uid() = user_id` | all |
 
-**Notes:** Full own-row CRUD. Unique constraint on `(user_id, sticker_id)` prevents duplicate entries.
+**Notes:** Full own-row CRUD. Unique constraint on `(user_id, sticker_id)` prevents duplicate entries. Cross-user inventory reads are performed exclusively through SECURITY DEFINER RPCs which bypass RLS:
+- `find_nearby_traders(lat, lng, radius_m)` (migration `0013`) — aggregates DUPLICATE/NEEDED counts per nearby user.
+- `get_reciprocal_matches(p_nearby_ids)` (migration `0014`) — given up to 50 nearby user IDs, computes reciprocal match scores by intersecting their DUPLICATE stickers with the caller's NEEDED stickers, and vice versa. Returns `user_id`, `they_have_i_need`, `i_have_they_need`, `match_score`. Authenticated only.
 
 ### `trade_audit_log`
 | Operation | Policy Name | Rule | Role |

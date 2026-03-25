@@ -239,7 +239,7 @@ Rate limits: 120 req/min (authenticated), 30 req/min (guest). Returns 429 with `
 ## Database Schema (Supabase)
 
 **Existing tables:**
-- `user_locations` — PostGIS geography points with GiST index, RLS own-row write, reads via `find_nearby_users()` SECURITY DEFINER RPC only (no direct SELECT policy)
+- `user_locations` — PostGIS geography points with GiST index, RLS own-row write, reads via SECURITY DEFINER RPCs only (no direct SELECT policy): `find_nearby_users()` for general proximity, `find_nearby_traders()` for trader discovery
 - `stickers` — 980-sticker catalog (48 teams, 112 pages)
 - `user_profiles` — Trust Score, age verification (`date_of_birth`, `is_under_13`, `age_verified_at` — immutable after verification), preferences
 - `user_inventory` — User's sticker collection (OWNED/NEEDED/DUPLICATE status, quantity, RLS own-only)
@@ -251,7 +251,7 @@ Rate limits: 120 req/min (authenticated), 30 req/min (guest). Returns 429 with `
 - `matches` — Matchmaking results
 - `messages` — Chat message persistence
 
-All tables require RLS policies. The `trade_audit_log` is append-only. Migration `0007` includes a runtime audit that **fails the migration** if any public table lacks RLS. Migration `0009` adds `verify_age()` SECURITY DEFINER RPC and immutability trigger for age fields. Migration `0010` adds parental consent token management RPCs and extends the immutability trigger to protect consent fields. Migration `0011` adds `guest_migrations` table and `migrate_guest_inventory()` RPC for idempotent guest-to-member inventory transfer. Migration `0012` replaces the broad `user_locations` SELECT policy with `find_nearby_users()` SECURITY DEFINER RPC (50 km max radius, excludes under-13, excludes caller). Full policy matrix: [`docs/rls-policies.md`](docs/rls-policies.md).
+All tables require RLS policies. The `trade_audit_log` is append-only. Migration `0007` includes a runtime audit that **fails the migration** if any public table lacks RLS. Migration `0009` adds `verify_age()` SECURITY DEFINER RPC and immutability trigger for age fields. Migration `0010` adds parental consent token management RPCs and extends the immutability trigger to protect consent fields. Migration `0011` adds `guest_migrations` table and `migrate_guest_inventory()` RPC for idempotent guest-to-member inventory transfer. Migration `0012` replaces the broad `user_locations` SELECT policy with `find_nearby_users()` SECURITY DEFINER RPC (50 km max radius, excludes under-13, excludes caller). Migration `0013` adds `find_nearby_traders()` SECURITY DEFINER RPC — returns top 50 nearby users who have DUPLICATE stickers, ordered by `<->` KNN distance; includes `display_name`, `duplicate_count`, `needed_count`. Full policy matrix: [`docs/rls-policies.md`](docs/rls-policies.md).
 
 **Supabase Edge Functions:**
 - `send-consent-email` — Authenticated POST. Sends parental consent email (Resend API in prod, console log in dev). Called from Flutter after `request_parental_consent()` RPC.

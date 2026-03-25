@@ -12,7 +12,11 @@ All public tables **must** have Row Level Security (RLS) enabled. Migration `000
 | UPDATE | `users_update_own_location` | `auth.uid() = user_id` | `authenticated` |
 | DELETE | `users_delete_own_location` | `auth.uid() = user_id` | `authenticated` |
 
-**Notes:** Direct SELECT is blocked. All reads go through `find_nearby_users(lat, lon, radius_m, max_results)` SECURITY DEFINER RPC (migration `0012`), which enforces a 50 km max radius, 100-result cap, excludes under-13 users, and excludes the caller. The Go matchmaking engine queries via `service_role` which bypasses RLS.
+**Notes:** Direct SELECT is blocked. All reads go through SECURITY DEFINER RPCs which bypass RLS:
+- `find_nearby_users(lat, lon, radius_m, max_results)` (migration `0012`) — returns nearby users within radius. 50 km max, 100-result cap, excludes under-13 and caller.
+- `find_nearby_traders(lat, lng, radius_m)` (migration `0013`) — returns nearby users who have at least one DUPLICATE sticker. 50 km max, 50-result cap, excludes under-13 and caller. Uses `<->` KNN operator for index-accelerated nearest-neighbour ordering. Returns `user_id`, `distance_m`, `display_name`, `duplicate_count`, `needed_count`.
+
+The Go matchmaking engine queries via `service_role` which bypasses RLS.
 
 ### `stickers`
 | Operation | Policy Name | Rule | Role |

@@ -84,7 +84,7 @@ sticker-swapp-app/
 │       ├── middleware/    # Auth, age gating, rate limiting, attestation, device integrity, trade limiting
 │       ├── db/            # pgx connection pool
 │       ├── auth/          # (reserved)
-│       ├── matchmaking/   # (reserved)
+│       ├── matchmaking/   # Scoring engine, in-memory cache
 │       └── trades/        # (reserved)
 ├── supabase/              # Migrations & Edge Functions
 │   ├── migrations/
@@ -233,8 +233,33 @@ Flutter (post-signup) → migrate-guest-inventory Edge Function → migrate_gues
 |--------|---------------------|--------|-------------|------------|--------------------------------|
 | GET    | `/healthz`          | None   | None        | None       | DB connectivity check          |
 | POST   | `/api/v1/ably/auth` | JWT    | Required    | 120/min    | Issue scoped Ably token        |
+| GET    | `/api/v1/matches`   | JWT    | Required    | 120/min    | Scored match discovery         |
 
 Rate limits: 120 req/min (authenticated), 30 req/min (guest). Returns 429 with `Retry-After: 60`.
+
+## Matchmaking Engine
+
+**Endpoint:** `GET /api/v1/matches?lat=X&lng=Y&radius=Z`
+
+**Scoring formula:** `Proximity × 0.5 + Reciprocal × 0.3 + Activity × 0.2`
+
+**Sub-scores (all normalized [0,1]):**
+- **Proximity:** `1 - (distance_m / radius_m)`, clamped. Closer = higher.
+- **Reciprocal:** `min(match_score, 20) / 20`. More reciprocal sticker matches = higher.
+- **Activity:** `exp(-ln(2) × hours_since_update / 24)`. 24h half-life exponential decay using `user_locations.updated_at`. Recent = higher.
+
+**Cache:** 60s in-memory TTL per user (`sync.RWMutex`). Background cleanup every 30s. `X-Cache: HIT|MISS` response header.
+
+**Data flow:**
+1. Go sets `request.jwt.claim.sub` via `set_config` in a pgx transaction for `auth.uid()`
+2. Calls `find_nearby_traders(lat, lng, radius)` RPC → nearby traders + distance + `location_updated_at`
+3. Calls `get_reciprocal_matches(nearby_ids)` RPC → reciprocal sticker overlap
+4. Normalizes sub-scores, computes weighted total, sorts descending → returns JSON array
+
+**Key files:**
+- `go_service/internal/matchmaking/scorer.go` — `Scorer` interface, `DBScorer`, normalization functions (`NormalizeProximity`, `NormalizeReciprocal`, `NormalizeActivity`, `ComputeScore`)
+- `go_service/internal/matchmaking/cache.go` — TTL cache with `sync.RWMutex`, background cleanup
+- `go_service/internal/api/matchmaking.go` — `MatchmakingHandler` with `ListMatches` HTTP handler
 
 ## Database Schema (Supabase)
 
@@ -251,7 +276,7 @@ Rate limits: 120 req/min (authenticated), 30 req/min (guest). Returns 429 with `
 - `matches` — Matchmaking results
 - `messages` — Chat message persistence
 
-All tables require RLS policies. The `trade_audit_log` is append-only. Migration `0007` includes a runtime audit that **fails the migration** if any public table lacks RLS. Migration `0009` adds `verify_age()` SECURITY DEFINER RPC and immutability trigger for age fields. Migration `0010` adds parental consent token management RPCs and extends the immutability trigger to protect consent fields. Migration `0011` adds `guest_migrations` table and `migrate_guest_inventory()` RPC for idempotent guest-to-member inventory transfer. Migration `0012` replaces the broad `user_locations` SELECT policy with `find_nearby_users()` SECURITY DEFINER RPC (50 km max radius, excludes under-13, excludes caller). Migration `0013` adds `find_nearby_traders()` SECURITY DEFINER RPC — returns top 50 nearby users who have DUPLICATE stickers, ordered by `<->` KNN distance; includes `display_name`, `duplicate_count`, `needed_count`. Migration `0014` adds `get_reciprocal_matches(p_nearby_ids uuid[])` SECURITY DEFINER RPC — given nearby user IDs from `find_nearby_traders()`, returns reciprocal matches by intersecting DUPLICATE/NEEDED inventories. Returns `user_id`, `they_have_i_need`, `i_have_they_need`, `match_score` (LEAST of the two counts). Array clamped to 50. Authenticated only. Full policy matrix: [`docs/rls-policies.md`](docs/rls-policies.md).
+All tables require RLS policies. The `trade_audit_log` is append-only. Migration `0007` includes a runtime audit that **fails the migration** if any public table lacks RLS. Migration `0009` adds `verify_age()` SECURITY DEFINER RPC and immutability trigger for age fields. Migration `0010` adds parental consent token management RPCs and extends the immutability trigger to protect consent fields. Migration `0011` adds `guest_migrations` table and `migrate_guest_inventory()` RPC for idempotent guest-to-member inventory transfer. Migration `0012` replaces the broad `user_locations` SELECT policy with `find_nearby_users()` SECURITY DEFINER RPC (50 km max radius, excludes under-13, excludes caller). Migration `0013` adds `find_nearby_traders()` SECURITY DEFINER RPC — returns top 50 nearby users who have DUPLICATE stickers, ordered by `<->` KNN distance; includes `display_name`, `duplicate_count`, `needed_count`. Migration `0014` adds `get_reciprocal_matches(p_nearby_ids uuid[])` SECURITY DEFINER RPC — given nearby user IDs from `find_nearby_traders()`, returns reciprocal matches by intersecting DUPLICATE/NEEDED inventories. Returns `user_id`, `they_have_i_need`, `i_have_they_need`, `match_score` (LEAST of the two counts). Array clamped to 50. Authenticated only. Migration `0015` modifies `find_nearby_traders()` to also return `location_updated_at` (from `user_locations.updated_at`) as an activity signal for the Go matchmaking scoring engine. Full policy matrix: [`docs/rls-policies.md`](docs/rls-policies.md).
 
 **Supabase Edge Functions:**
 - `send-consent-email` — Authenticated POST. Sends parental consent email (Resend API in prod, console log in dev). Called from Flutter after `request_parental_consent()` RPC.

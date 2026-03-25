@@ -7,12 +7,12 @@ All public tables **must** have Row Level Security (RLS) enabled. Migration `000
 ### `user_locations`
 | Operation | Policy Name | Rule | Role |
 |-----------|-------------|------|------|
-| SELECT | `authenticated_read_locations` | All authenticated users (proximity discovery) | `authenticated` |
+| SELECT | — | Blocked by RLS (no policy). Reads via `find_nearby_users()` RPC only | — |
 | INSERT | `users_insert_own_location` | `auth.uid() = user_id` | `authenticated` |
 | UPDATE | `users_update_own_location` | `auth.uid() = user_id` | `authenticated` |
 | DELETE | `users_delete_own_location` | `auth.uid() = user_id` | `authenticated` |
 
-**Notes:** Under-13 users are blocked from location features at the application layer (Go middleware returns 403). The Go matchmaking engine queries locations via `service_role` which bypasses RLS.
+**Notes:** Direct SELECT is blocked. All reads go through `find_nearby_users(lat, lon, radius_m, max_results)` SECURITY DEFINER RPC (migration `0012`), which enforces a 50 km max radius, 100-result cap, excludes under-13 users, and excludes the caller. The Go matchmaking engine queries via `service_role` which bypasses RLS.
 
 ### `stickers`
 | Operation | Policy Name | Rule | Role |

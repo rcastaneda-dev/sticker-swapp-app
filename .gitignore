@@ -10,3 +10,6 @@
 
 # Flutter
 google-services.json
+
+# Go build output
+bin/

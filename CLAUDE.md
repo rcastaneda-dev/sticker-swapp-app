@@ -92,6 +92,7 @@ sticker-swapp-app/
 │   ├── migrations/
 │   └── functions/
 ├── .github/workflows/     # CI/CD pipelines
+├── cloud-run-service.yaml # Declarative Cloud Run config (Knative)
 ├── Makefile
 └── .env
 ```
@@ -99,9 +100,12 @@ sticker-swapp-app/
 ## Quick Commands
 
 ```bash
-make dev       # Run Go service on :8080 (sources .env automatically)
-make test      # Run Go tests
-make migrate   # Reset local Supabase DB (supabase db reset)
+make dev          # Run Go service on :8080 (sources .env automatically)
+make test         # Run Go tests
+make migrate      # Reset local Supabase DB (supabase db reset)
+make build        # Build Go binary locally (output: bin/server)
+make docker-build # Build Docker image
+make docker-run   # Run Docker image with local .env
 ```
 
 Flutter:
@@ -370,12 +374,50 @@ Deployment secrets (GitHub Actions): `APPSTORE_CONNECT_*`, `PLAY_SERVICE_ACCOUNT
 
 ## CI/CD Pipeline
 
-GitHub Actions on PRs and pushes to `main`:
+GitHub Actions workflows:
+
+**Mobile** (`.github/workflows/mobile-ci.yml`) on PRs and pushes to `main`:
 1. **lint-test** — `flutter analyze` + `flutter test`
 2. **build-android** — AAB → Google Play internal track (on push to main)
 3. **build-ios** — IPA → TestFlight (on push to main)
 
 Version auto-bumps: `1.0.${{ github.run_number }}`. Flutter version pinned in `.flutter-version`.
+
+**Go Service** (`.github/workflows/go-deploy.yml`) on pushes to `main` (when `go_service/**` changes):
+1. **test** — `go test -race ./...`
+2. **deploy** — Docker build → Artifact Registry → Cloud Run
+
+## Go Service Deployment
+
+**Target:** Google Cloud Run (us-central1)
+
+**Image:** Multi-stage Docker build → `gcr.io/distroless/static-debian12:nonroot` (no shell, non-root, ~8MB)
+
+**Auto-scaling:** 0–10 instances, 80 concurrent requests per instance, session affinity enabled.
+
+**Request timeout:** 3600s (to support WebSocket connections). REST endpoints are protected by Go-level ReadTimeout (10s) and middleware rate limiting.
+
+**Health probes:**
+- Startup: `GET /healthz` — 5s intervals, 3 attempts, 3s timeout
+- Liveness: `GET /healthz` — 30s intervals, 3 failures before restart, 3s timeout
+
+**Secrets:** Injected from Google Secret Manager at runtime (not baked into image): `ABLY_API_KEY`, `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_DB_URL`, `GOOGLE_CLOUD_PROJECT_NUMBER`, `APPLE_APP_ID`.
+
+**CI/CD:** `.github/workflows/go-deploy.yml` — triggers on push to `main` when `go_service/**` changes. Uses Workload Identity Federation (no service account keys). Pushes to Artifact Registry, deploys via `google-github-actions/deploy-cloudrun`.
+
+**Declarative config:** `cloud-run-service.yaml` — Knative service definition. Apply with `gcloud run services replace cloud-run-service.yaml` (replace `PROJECT_ID` placeholders first).
+
+**Local Docker:**
+```bash
+make docker-build   # Build image
+make docker-run     # Run with .env
+```
+
+**Key files:**
+- `go_service/Dockerfile` — Multi-stage build (golang:1.26-alpine → distroless)
+- `go_service/.dockerignore` — Build context exclusions
+- `.github/workflows/go-deploy.yml` — CI/CD pipeline (test → build → deploy)
+- `cloud-run-service.yaml` — Declarative Cloud Run service configuration
 
 ## MVP Phases & Current Status
 

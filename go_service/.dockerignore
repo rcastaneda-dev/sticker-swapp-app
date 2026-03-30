@@ -1,0 +1,22 @@
+# Version control
+.git
+.gitignore
+
+# Test scripts
+scripts/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+
+# Documentation
+README.md
+docs/
+
+# The binary itself (if built locally)
+server

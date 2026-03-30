@@ -15,6 +15,7 @@ import (
 	"github.com/wc2026-stickers/sticker-swap-app/go_service/internal/attestation"
 	"github.com/wc2026-stickers/sticker-swap-app/go_service/internal/db"
 	"github.com/wc2026-stickers/sticker-swap-app/go_service/internal/matchmaking"
+	"github.com/wc2026-stickers/sticker-swap-app/go_service/internal/ws"
 )
 
 func main() {
@@ -60,6 +61,11 @@ func main() {
 	matchCache := matchmaking.NewCache(matchmaking.DefaultCacheConfig())
 	defer matchCache.Stop()
 
+	// Initialize WebSocket connection manager
+	wsCfg := ws.DefaultConfig()
+	wsManager := ws.NewManager(wsCfg)
+	wsHandler := ws.NewHandler(wsManager, wsCfg, ctx)
+
 	router := api.NewRouter(api.RouterConfig{
 		Pool:                pool,
 		AblyHandler:         tokenHandler,
@@ -69,15 +75,17 @@ func main() {
 		AttestationDisabled: attestationDisabled,
 		Scorer:              matchScorer,
 		MatchCache:          matchCache,
+		WSHandler:           wsHandler,
 	})
 
 	// Start HTTP server
 	srv := &http.Server{
 		Addr:         ":" + port,
 		Handler:      router,
-		ReadTimeout:  10 * time.Second,
-		WriteTimeout: 15 * time.Second,
-		IdleTimeout:  60 * time.Second,
+		ReadTimeout: 10 * time.Second,
+		// WriteTimeout disabled (0) to support WebSocket connections.
+		// REST handler writes complete quickly; WS writes use per-op timeouts.
+		IdleTimeout: 60 * time.Second,
 	}
 
 	errCh := make(chan error, 1)
@@ -95,6 +103,11 @@ func main() {
 			log.Fatalf("Server failed: %v", err)
 		}
 	}
+
+	// Shut down WebSocket connections first (while HTTP server still running)
+	wsShutdownCtx, wsCancel := context.WithTimeout(context.Background(), wsCfg.ShutdownGracePeriod)
+	wsManager.Shutdown(wsShutdownCtx)
+	wsCancel()
 
 	// Graceful shutdown with 10-second deadline
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

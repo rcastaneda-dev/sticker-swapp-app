@@ -9,6 +9,7 @@ import (
 	"github.com/wc2026-stickers/sticker-swap-app/go_service/internal/attestation"
 	"github.com/wc2026-stickers/sticker-swap-app/go_service/internal/matchmaking"
 	"github.com/wc2026-stickers/sticker-swap-app/go_service/internal/middleware"
+	"github.com/wc2026-stickers/sticker-swap-app/go_service/internal/ws"
 )
 
 // RouterConfig holds all dependencies needed to register routes.
@@ -21,6 +22,7 @@ type RouterConfig struct {
 	AttestationDisabled  bool
 	Scorer               matchmaking.Scorer
 	MatchCache           *matchmaking.Cache
+	WSHandler            *ws.Handler
 }
 
 // NewRouter constructs a Chi router with all routes and middleware.
@@ -57,6 +59,13 @@ func NewRouter(cfg RouterConfig) chi.Router {
 			middleware.ReadDeviceIntegrity(),
 			middleware.RequireAge13Plus(),
 		).Get("/matches", matchHandler.ListMatches)
+
+		// WebSocket — JWT + age gate, no attestation (connection pipe only)
+		r.With(
+			middleware.RateLimit(30, 60),
+			middleware.ValidateJWT(cfg.SupabaseURL, cfg.SupabaseSecret),
+			middleware.RequireAge13Plus(),
+		).Get("/ws", cfg.WSHandler.Upgrade)
 
 		// Future trade endpoints (Phase 3):
 		// r.With(

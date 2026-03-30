@@ -85,6 +85,7 @@ sticker-swapp-app/
 │       ├── db/            # pgx connection pool
 │       ├── auth/          # (reserved)
 │       ├── matchmaking/   # Scoring engine, in-memory cache
+│       ├── ws/            # WebSocket connection manager (goroutine-per-connection)
 │       └── trades/        # (reserved)
 ├── supabase/              # Migrations & Edge Functions
 │   ├── migrations/
@@ -234,6 +235,7 @@ Flutter (post-signup) → migrate-guest-inventory Edge Function → migrate_gues
 | GET    | `/healthz`          | None   | None        | None       | DB connectivity check          |
 | POST   | `/api/v1/ably/auth` | JWT    | Required    | 120/min    | Issue scoped Ably token        |
 | GET    | `/api/v1/matches`   | JWT    | Required    | 120/min    | Scored match discovery         |
+| GET    | `/api/v1/ws`        | JWT    | None        | 30/min     | WebSocket upgrade (1 conn/user)|
 
 Rate limits: 120 req/min (authenticated), 30 req/min (guest). Returns 429 with `Retry-After: 60`.
 
@@ -260,6 +262,28 @@ Rate limits: 120 req/min (authenticated), 30 req/min (guest). Returns 429 with `
 - `go_service/internal/matchmaking/scorer.go` — `Scorer` interface, `DBScorer`, normalization functions (`NormalizeProximity`, `NormalizeReciprocal`, `NormalizeActivity`, `ComputeScore`)
 - `go_service/internal/matchmaking/cache.go` — TTL cache with `sync.RWMutex`, background cleanup
 - `go_service/internal/api/matchmaking.go` — `MatchmakingHandler` with `ListMatches` HTTP handler
+
+## WebSocket Connection Manager
+
+**Endpoint:** `GET /api/v1/ws` — upgrades to WebSocket. Requires JWT auth + age 13+. No attestation (connection pipe only).
+
+**Connection limit:** 1 per user. New connection evicts existing with `StatusPolicyViolation`.
+
+**Heartbeat:** Server pings every 30s, 10s pong timeout. Failed heartbeat closes the connection.
+
+**Graceful shutdown:** Manager sends `StatusGoingAway` close frames to all connections, waits up to 5s for cleanup, then abandons. Runs before HTTP server shutdown.
+
+**Architecture:** Goroutine-per-connection. `Conn.Run(ctx)` manages heartbeat loop + read pump. `Manager` is a `sync.RWMutex`-guarded `map[string]*Conn` registry. Non-blocking `Close()` via buffered channel signal (avoids blocking `nhooyr.io/websocket`'s 5s close handshake in hot paths).
+
+**Middleware chain:** `RateLimit(30/min) → ValidateJWT → RequireAge13Plus`
+
+**HTTP server:** `WriteTimeout` set to 0 to support long-lived WebSocket connections (REST writes complete quickly; WS writes use per-op `Config.WriteTimeout`).
+
+**Key files:**
+- `go_service/internal/ws/config.go` — `Config` struct, `DefaultConfig()` (30s heartbeat, 10s pong timeout, 4KB read limit)
+- `go_service/internal/ws/conn.go` — `Conn` type, `Run()` lifecycle, heartbeat loop, read pump, `MessageHandler` callback
+- `go_service/internal/ws/manager.go` — `Manager` registry, `Add`/`Get`/`Len`/`Shutdown`, pointer-safe eviction
+- `go_service/internal/ws/handler.go` — `Handler` with `Upgrade` HTTP handler, server lifetime context
 
 ## Database Schema (Supabase)
 

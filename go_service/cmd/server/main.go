@@ -14,6 +14,7 @@ import (
 	"github.com/wc2026-stickers/sticker-swap-app/go_service/internal/api"
 	"github.com/wc2026-stickers/sticker-swap-app/go_service/internal/attestation"
 	"github.com/wc2026-stickers/sticker-swap-app/go_service/internal/db"
+	"github.com/wc2026-stickers/sticker-swap-app/go_service/internal/matches"
 	"github.com/wc2026-stickers/sticker-swap-app/go_service/internal/matchmaking"
 	"github.com/wc2026-stickers/sticker-swap-app/go_service/internal/ws"
 )
@@ -61,6 +62,9 @@ func main() {
 	matchCache := matchmaking.NewCache(matchmaking.DefaultCacheConfig())
 	defer matchCache.Stop()
 
+	// Initialize match creator
+	matchCreator := matches.NewMatchCreator(pool)
+
 	// Initialize WebSocket connection manager
 	wsCfg := ws.DefaultConfig()
 	wsManager := ws.NewManager(wsCfg)
@@ -76,6 +80,7 @@ func main() {
 		Scorer:              matchScorer,
 		MatchCache:          matchCache,
 		WSHandler:           wsHandler,
+		MatchCreator:        matchCreator,
 	})
 
 	// Start HTTP server

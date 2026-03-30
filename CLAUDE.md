@@ -84,6 +84,7 @@ sticker-swapp-app/
 │       ├── middleware/    # Auth, age gating, rate limiting, attestation, device integrity, trade limiting
 │       ├── db/            # pgx connection pool
 │       ├── auth/          # (reserved)
+│       ├── matches/       # Swipe & match creation (MatchCreator interface)
 │       ├── matchmaking/   # Scoring engine, in-memory cache
 │       ├── ws/            # WebSocket connection manager (goroutine-per-connection)
 │       └── trades/        # (reserved)
@@ -235,6 +236,7 @@ Flutter (post-signup) → migrate-guest-inventory Edge Function → migrate_gues
 | GET    | `/healthz`          | None   | None        | None       | DB connectivity check          |
 | POST   | `/api/v1/ably/auth` | JWT    | Required    | 120/min    | Issue scoped Ably token        |
 | GET    | `/api/v1/matches`   | JWT    | Required    | 120/min    | Scored match discovery         |
+| POST   | `/api/v1/matches`   | JWT    | Required    | 120/min    | Create match (mutual swipe)    |
 | GET    | `/api/v1/ws`        | JWT    | None        | 30/min     | WebSocket upgrade (1 conn/user)|
 
 Rate limits: 120 req/min (authenticated), 30 req/min (guest). Returns 429 with `Retry-After: 60`.
@@ -262,6 +264,25 @@ Rate limits: 120 req/min (authenticated), 30 req/min (guest). Returns 429 with `
 - `go_service/internal/matchmaking/scorer.go` — `Scorer` interface, `DBScorer`, normalization functions (`NormalizeProximity`, `NormalizeReciprocal`, `NormalizeActivity`, `ComputeScore`)
 - `go_service/internal/matchmaking/cache.go` — TTL cache with `sync.RWMutex`, background cleanup
 - `go_service/internal/api/matchmaking.go` — `MatchmakingHandler` with `ListMatches` HTTP handler
+
+## Match Creation (Swipe & Match)
+
+**Endpoint:** `POST /api/v1/matches` — record a right-swipe; if mutual, create a PENDING match.
+
+**Request body:** `{"target_user_id": "uuid"}`
+
+**Response:**
+- **201 Created** — mutual swipe, match created: `{matched: true, match_id, user1_id, user2_id, status: "PENDING", created_at}`
+- **200 OK** — swipe recorded, no match yet: `{matched: false, swipe_recorded: true}`
+
+**Validation:** Auth required, valid UUID, not self-swipe. Both users must have swiped right (enforced by `create_match_if_mutual()` RPC).
+
+**Idempotency:** Duplicate swipes and duplicate match creation are safe — `ON CONFLICT DO NOTHING` on both `swipes` and `matches` tables. Concurrent mutual swipes handled via canonical ordering (`LEAST`/`GREATEST` user IDs) + fallback SELECT.
+
+**Key files:**
+- `go_service/internal/matches/matcher.go` — `MatchCreator` interface, `CreateMatchResult` type
+- `go_service/internal/matches/db_matcher.go` — `DBMatchCreator` pgx implementation (tx + set_config + RPC)
+- `go_service/internal/api/matches.go` — `MatchHandler` with `CreateMatch` HTTP handler
 
 ## WebSocket Connection Manager
 
@@ -295,12 +316,13 @@ Rate limits: 120 req/min (authenticated), 30 req/min (guest). Returns 429 with `
 - `trade_audit_log` — Immutable trade history (append-only via `record_trade()` SECURITY DEFINER function, RLS read-only for participants)
 - `parental_consent_tokens` — Single-use, time-limited consent tokens (64-char hex, 7-day expiry, `consumed_at` null-until-used). RLS read-only for user's own tokens; writes via SECURITY DEFINER RPCs only.
 - `guest_migrations` — Tracks completed guest-to-member inventory migrations (device_uuid, user_id, items_sent, items_written). UNIQUE on (device_uuid, user_id) for migration-level idempotency. RLS read-only for user's own rows; writes via SECURITY DEFINER RPC only.
+- `swipes` — Records individual right-swipes between users (swiper_id, target_id). UNIQUE (swiper_id, target_id) prevents duplicates and enables idempotent `ON CONFLICT DO NOTHING`. RLS read-only for own swipes; writes via SECURITY DEFINER RPC only.
+- `matches` — Created when both users swipe right on each other. UUID primary key (used in Ably channel names). Canonical ordering (`CHECK user1_id < user2_id`) with UNIQUE constraint prevents duplicate A↔B matches. Status: `match_status` enum (PENDING/ACCEPTED/COMPLETED/CANCELLED/EXPIRED). RLS read-only for participants; writes via `create_match_if_mutual()` SECURITY DEFINER RPC.
 
 **Planned tables (from PRD):**
-- `matches` — Matchmaking results
 - `messages` — Chat message persistence
 
-All tables require RLS policies. The `trade_audit_log` is append-only. Migration `0007` includes a runtime audit that **fails the migration** if any public table lacks RLS. Migration `0009` adds `verify_age()` SECURITY DEFINER RPC and immutability trigger for age fields. Migration `0010` adds parental consent token management RPCs and extends the immutability trigger to protect consent fields. Migration `0011` adds `guest_migrations` table and `migrate_guest_inventory()` RPC for idempotent guest-to-member inventory transfer. Migration `0012` replaces the broad `user_locations` SELECT policy with `find_nearby_users()` SECURITY DEFINER RPC (50 km max radius, excludes under-13, excludes caller). Migration `0013` adds `find_nearby_traders()` SECURITY DEFINER RPC — returns top 50 nearby users who have DUPLICATE stickers, ordered by `<->` KNN distance; includes `display_name`, `duplicate_count`, `needed_count`. Migration `0014` adds `get_reciprocal_matches(p_nearby_ids uuid[])` SECURITY DEFINER RPC — given nearby user IDs from `find_nearby_traders()`, returns reciprocal matches by intersecting DUPLICATE/NEEDED inventories. Returns `user_id`, `they_have_i_need`, `i_have_they_need`, `match_score` (LEAST of the two counts). Array clamped to 50. Authenticated only. Migration `0015` modifies `find_nearby_traders()` to also return `location_updated_at` (from `user_locations.updated_at`) as an activity signal for the Go matchmaking scoring engine. Full policy matrix: [`docs/rls-policies.md`](docs/rls-policies.md).
+All tables require RLS policies. The `trade_audit_log` is append-only. Migration `0007` includes a runtime audit that **fails the migration** if any public table lacks RLS. Migration `0009` adds `verify_age()` SECURITY DEFINER RPC and immutability trigger for age fields. Migration `0010` adds parental consent token management RPCs and extends the immutability trigger to protect consent fields. Migration `0011` adds `guest_migrations` table and `migrate_guest_inventory()` RPC for idempotent guest-to-member inventory transfer. Migration `0012` replaces the broad `user_locations` SELECT policy with `find_nearby_users()` SECURITY DEFINER RPC (50 km max radius, excludes under-13, excludes caller). Migration `0013` adds `find_nearby_traders()` SECURITY DEFINER RPC — returns top 50 nearby users who have DUPLICATE stickers, ordered by `<->` KNN distance; includes `display_name`, `duplicate_count`, `needed_count`. Migration `0014` adds `get_reciprocal_matches(p_nearby_ids uuid[])` SECURITY DEFINER RPC — given nearby user IDs from `find_nearby_traders()`, returns reciprocal matches by intersecting DUPLICATE/NEEDED inventories. Returns `user_id`, `they_have_i_need`, `i_have_they_need`, `match_score` (LEAST of the two counts). Array clamped to 50. Authenticated only. Migration `0015` modifies `find_nearby_traders()` to also return `location_updated_at` (from `user_locations.updated_at`) as an activity signal for the Go matchmaking scoring engine. Migration `0016` creates `swipes` table, `matches` table (with `match_status` enum), and `create_match_if_mutual(p_target_id uuid)` SECURITY DEFINER RPC — records a right-swipe, checks for mutual interest, and creates a PENDING match with canonical user ordering if both users have swiped. Idempotent via `ON CONFLICT DO NOTHING` on both tables. Granted to `authenticated` only. Full policy matrix: [`docs/rls-policies.md`](docs/rls-policies.md).
 
 **Supabase Edge Functions:**
 - `send-consent-email` — Authenticated POST. Sends parental consent email (Resend API in prod, console log in dev). Called from Flutter after `request_parental_consent()` RPC.

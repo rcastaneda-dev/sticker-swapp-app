@@ -32,6 +32,7 @@ sticker-swapp-app/
 │   │   │       ├── certificate_pinner.dart           # SPKI SHA-256 pin validation
 │   │   │       ├── device_integrity_service.dart     # Root/jailbreak detection (safe_device)
 │   │   │       ├── device_integrity_http_client.dart # http.BaseClient with X-Device-Integrity header
+│   │   │       ├── location_service.dart              # Foreground GPS + user_locations upsert
 │   │   │       ├── pinned_http_client.dart           # http.BaseClient with pinning
 │   │   │       └── push_notification_service.dart
 │   │   ├── features/      # Feature modules (auth, chat, matching, stickers)
@@ -58,6 +59,9 @@ sticker-swapp-app/
 │   │   │   │   ├── data/services/
 │   │   │   │   └── presentation/screens/
 │   │   │   └── matching/
+│   │   │       ├── data/
+│   │   │       │   └── providers/
+│   │   │       │       └── location_providers.dart  # Location permission & update state
 │   │   │       └── presentation/screens/
 │   │   │           ├── matches_screen.dart     # Main hub (under-13 guard)
 │   │   │           └── match_screen.dart       # Trade match (under-13 guard)
@@ -198,6 +202,39 @@ JWT expiry: 15 min (900s in config.toml) with refresh token rotation (10s reuse 
 - `overallProgressProvider` — Provider<({int owned, int total})> for total collection stats
 
 **Real-time updates:** All widgets watch `guestInventoryProvider` through derived providers — toggling a sticker in the catalog immediately updates progress bars and counts on the progress screen.
+
+## Location Service
+
+**Scope:** Foreground-only GPS location permission and `user_locations` table upsert. Required for the matchmaking discovery feature (`GET /api/v1/matches`). Under-13 users are completely blocked at the provider layer.
+
+**Package:** `geolocator` (handles both permission management and GPS position on iOS/Android).
+
+**Platform config:**
+- iOS: `NSLocationWhenInUseUsageDescription` in `Info.plist` (foreground only)
+- Android: `ACCESS_FINE_LOCATION` in `AndroidManifest.xml` (no background permission)
+
+**LocationService** (`core/services/location_service.dart`):
+- All platform calls injectable via typedef callbacks for unit testing (follows `DeviceIntegrityService` pattern)
+- `SupabaseClient` resolved lazily — permission-only tests don't need Supabase initialization
+- `checkPermission()` — reads current status without requesting
+- `requestPermission()` — checks `deniedForever` first (avoids no-op on iOS), then requests
+- `openAppSettings()` / `openLocationSettings()` — recovery from `deniedForever` / `serviceDisabled`
+- `updateLocation()` — gets GPS position, upserts `POINT(lng lat)` + `accuracy_m` to `user_locations` via RLS policies
+- `deleteLocation()` — removes row for opt-out / under-13 cleanup
+- `buildPointWkt(lng, lat)` — static helper for PostGIS WKT format (longitude first)
+
+**Permission status enum:** `LocationPermissionStatus` — `granted`, `grantedAlways`, `denied`, `deniedForever`, `serviceDisabled`, `unsupported`
+
+**Providers** (`features/matching/data/providers/location_providers.dart`):
+- `locationServiceProvider` — LocationService singleton
+- `locationEnabledProvider` — `Provider<bool>`: `true` only for authenticated, age-verified, 13+ users. Single gate for under-13 policy.
+- `locationPermissionProvider` — `FutureProvider<LocationPermissionStatus?>`: re-checks on auth state change; `null` when disabled
+- `hasLocationPermissionProvider` — `Provider<bool>`: derived from permission status
+- `locationNotifierProvider` — `AsyncNotifierProvider<LocationNotifier, LocationUpdateResult?>`: drives full flow (request permission → fetch position → upsert). Returns permission status if blocked, `null` on success.
+
+**Key files:**
+- `flutter_app/lib/core/services/location_service.dart` — Service with injectable deps
+- `flutter_app/lib/features/matching/data/providers/location_providers.dart` — Riverpod providers
 
 ## Guest Mode & Migration
 

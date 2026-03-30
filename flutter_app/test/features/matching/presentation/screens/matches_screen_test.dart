@@ -1,8 +1,15 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:geolocator/geolocator.dart';
 import 'package:supabase_flutter/supabase_flutter.dart' hide AuthState;
+import 'package:flutter_app/core/services/location_service.dart';
 import 'package:flutter_app/features/auth/data/providers/auth_providers.dart';
+import 'package:flutter_app/features/matching/data/models/scored_match.dart';
+import 'package:flutter_app/features/matching/data/models/swipe_result.dart';
+import 'package:flutter_app/features/matching/data/providers/discovery_providers.dart';
+import 'package:flutter_app/features/matching/data/providers/location_providers.dart';
+import 'package:flutter_app/features/matching/data/services/match_discovery_service.dart';
 import 'package:flutter_app/features/matching/presentation/screens/matches_screen.dart';
 import 'package:flutter_app/shared/shared.dart';
 
@@ -34,12 +41,89 @@ class _StubAuthStateNotifier extends AuthStateNotifier {
   AppAuthState build() => _initial;
 }
 
-Widget _buildSubject({Map<String, dynamic>? metadata}) {
+Position _fakePosition() => Position(
+      latitude: 13.6929,
+      longitude: -89.2182,
+      timestamp: DateTime(2026, 3, 30),
+      accuracy: 15,
+      altitude: 0,
+      altitudeAccuracy: 0,
+      heading: 0,
+      headingAccuracy: 0,
+      speed: 0,
+      speedAccuracy: 0,
+    );
+
+LocationService _fakeLocationService({
+  LocationPermission checkResult = LocationPermission.whileInUse,
+}) {
+  return LocationService(
+    isServiceEnabled: () async => true,
+    checkPermission: () async => checkResult,
+    requestPermission: () async => checkResult,
+    getPosition: ({locationSettings}) async => _fakePosition(),
+    openAppSettings: () async => true,
+    openLocationSettings: () async => true,
+  );
+}
+
+class _FakeMatchDiscoveryService extends MatchDiscoveryService {
+  _FakeMatchDiscoveryService() : super(baseUrl: 'https://test');
+
+  @override
+  Future<List<ScoredMatch>> fetchMatches({
+    required double latitude,
+    required double longitude,
+    int radiusM = 5000,
+  }) async {
+    return [];
+  }
+
+  @override
+  Future<SwipeResult> swipeRight(String targetUserId) async {
+    return const SwipeResult(matched: false, swipeRecorded: true);
+  }
+}
+
+/// Stub notifier that returns a pre-set DiscoveryState.
+class _StubDiscoveryNotifier extends DiscoveryNotifier {
+  final DiscoveryState _state;
+  _StubDiscoveryNotifier(this._state);
+
+  @override
+  DiscoveryState build() => _state;
+
+  @override
+  Future<void> initialize() async {}
+
+  @override
+  Future<void> refresh() async {}
+
+  @override
+  void swipeLeft() {}
+
+  @override
+  Future<SwipeResult?> swipeRight() async => null;
+
+  @override
+  void clearLastSwipeResult() {}
+}
+
+Widget _buildSubject({
+  Map<String, dynamic>? metadata,
+  DiscoveryState? discoveryState,
+}) {
   return ProviderScope(
     overrides: [
       authStateProvider.overrideWith(
         () => _StubAuthStateNotifier(_authenticated(metadata: metadata)),
       ),
+      locationServiceProvider.overrideWithValue(_fakeLocationService()),
+      matchDiscoveryServiceProvider
+          .overrideWithValue(_FakeMatchDiscoveryService()),
+      if (discoveryState != null)
+        discoveryProvider
+            .overrideWith(() => _StubDiscoveryNotifier(discoveryState)),
     ],
     child: MaterialApp(
       theme: SwappTheme.light,
@@ -47,6 +131,21 @@ Widget _buildSubject({Map<String, dynamic>? metadata}) {
     ),
   );
 }
+
+ScoredMatch _match({String id = 'u1', String name = 'Test User'}) =>
+    ScoredMatch(
+      userId: id,
+      displayName: name,
+      distanceM: 500,
+      duplicateCount: 10,
+      neededCount: 5,
+      theyHaveINeed: 3,
+      iHaveTheyNeed: 2,
+      proximityScore: 0.9,
+      reciprocalScore: 0.5,
+      activityScore: 0.8,
+      totalScore: 0.76,
+    );
 
 // ── Tests ─────────────────────────────────────────────────────────────────
 
@@ -65,15 +164,69 @@ void main() {
       expect(find.byIcon(Icons.swap_horiz), findsOneWidget);
     });
 
-    testWidgets('shows normal matches content when user is 13+',
+    testWidgets('13+ user sees location loading state initially',
         (tester) async {
       await tester.pumpWidget(_buildSubject(metadata: {
         'is_under_13': false,
         'age_verified_at': '2024-01-01T00:00:00Z',
       }));
 
-      expect(find.text('Matches'), findsOneWidget);
+      // Before post-frame callback fires
       expect(find.text('Trading Unlocks Later'), findsNothing);
+      expect(find.text('Getting your location...'), findsOneWidget);
+    });
+
+    testWidgets('shows card stack when discovery state is ready',
+        (tester) async {
+      await tester.pumpWidget(_buildSubject(
+        metadata: {
+          'is_under_13': false,
+          'age_verified_at': '2024-01-01T00:00:00Z',
+        },
+        discoveryState: DiscoveryState(
+          status: DiscoveryStatus.ready,
+          matches: [_match(id: 'u1', name: 'Carlos'), _match(id: 'u2')],
+          currentIndex: 0,
+        ),
+      ));
+      await tester.pump();
+
+      expect(find.text('Carlos'), findsOneWidget);
+      expect(find.text('2 traders nearby'), findsOneWidget);
+      expect(find.byIcon(Icons.close), findsOneWidget);
+      expect(find.byIcon(Icons.favorite), findsOneWidget);
+    });
+
+    testWidgets('shows empty state when no traders nearby', (tester) async {
+      await tester.pumpWidget(_buildSubject(
+        metadata: {
+          'is_under_13': false,
+          'age_verified_at': '2024-01-01T00:00:00Z',
+        },
+        discoveryState: const DiscoveryState(status: DiscoveryStatus.empty),
+      ));
+      await tester.pump();
+
+      expect(find.text('No Traders Nearby'), findsOneWidget);
+      expect(find.text('Refresh'), findsOneWidget);
+    });
+
+    testWidgets('shows error state with retry button', (tester) async {
+      await tester.pumpWidget(_buildSubject(
+        metadata: {
+          'is_under_13': false,
+          'age_verified_at': '2024-01-01T00:00:00Z',
+        },
+        discoveryState: const DiscoveryState(
+          status: DiscoveryStatus.error,
+          errorMessage: 'Network error',
+        ),
+      ));
+      await tester.pump();
+
+      expect(find.text('Oops!'), findsOneWidget);
+      expect(find.text('Network error'), findsOneWidget);
+      expect(find.text('Try Again'), findsOneWidget);
     });
 
     testWidgets('treats null is_under_13 as non-restricted', (tester) async {
@@ -81,8 +234,9 @@ void main() {
         'age_verified_at': '2024-01-01T00:00:00Z',
       }));
 
-      expect(find.text('Matches'), findsOneWidget);
       expect(find.text('Trading Unlocks Later'), findsNothing);
+      // Shows the discovery UI (location loading) instead of restricted state
+      expect(find.text('Getting your location...'), findsOneWidget);
     });
   });
 }

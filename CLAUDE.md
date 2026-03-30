@@ -120,7 +120,8 @@ cd flutter_app && flutter run \     # Run app (requires --dart-define for auth)
   --dart-define=SUPABASE_URL=https://hieuxypdjrdweznedjsm.supabase.co \
   --dart-define=SUPABASE_ANON_KEY=<your-key> \
   --dart-define=GOOGLE_WEB_CLIENT_ID=<web-client-id> \
-  --dart-define=GOOGLE_IOS_CLIENT_ID=<ios-client-id>
+  --dart-define=GOOGLE_IOS_CLIENT_ID=<ios-client-id> \
+  --dart-define=GO_SERVICE_URL=http://localhost:8080
 ```
 
 ## Architecture Decisions
@@ -235,6 +236,36 @@ JWT expiry: 15 min (900s in config.toml) with refresh token rotation (10s reuse 
 **Key files:**
 - `flutter_app/lib/core/services/location_service.dart` — Service with injectable deps
 - `flutter_app/lib/features/matching/data/providers/location_providers.dart` — Riverpod providers
+
+## Swipe Discovery UI
+
+**Route:** `/matches` — Tinder-style card stack for discovering nearby traders. Under-13 users see `SwappRestrictedEmptyState` instead.
+
+**Flow:** On screen load → request location permission → fetch GPS → `GET /api/v1/matches` (Go backend) → display scored match candidates as swipeable cards. Swipe right → `POST /api/v1/matches` (records swipe, creates mutual match if both swiped). Swipe left → skip (no API call).
+
+**Card stack animation:** `GestureDetector` pan tracking + `AnimationController` with `AlignmentTween`. Swipe threshold: 30% of half-screen-width or 800px/s fling velocity. `RepaintBoundary` on every card, behind cards use GPU-composited `Matrix4` transforms. "TRADE" (green) / "SKIP" (red) stamp labels appear with opacity tied to drag distance.
+
+**Match celebration:** On mutual match (201 response), a `MatchCelebrationOverlay` renders with elastic scale-in animation. Two CTAs: "Open Chat" → `/matches/{matchId}`, "Keep Swiping" → dismiss.
+
+**Dart-define:** `GO_SERVICE_URL` — base URL for the Go matchmaking backend (e.g., `http://localhost:8080` for local dev).
+
+**Models:**
+- `ScoredMatch` — maps `GET /api/v1/matches` JSON response (user_id, display_name, distance_m, they_have_i_need, i_have_they_need, total_score, etc.)
+- `SwipeResult` — maps `POST /api/v1/matches` JSON response (matched, match_id, status)
+
+**Providers:**
+- `matchDiscoveryServiceProvider` — `Provider<MatchDiscoveryService>` singleton
+- `discoveryProvider` — `NotifierProvider<DiscoveryNotifier, DiscoveryState>` — state machine (awaitingLocation → loading → ready/empty/error), card index management, swipe actions
+
+**Key files:**
+- `flutter_app/lib/features/matching/data/models/scored_match.dart` — ScoredMatch model
+- `flutter_app/lib/features/matching/data/models/swipe_result.dart` — SwipeResult model
+- `flutter_app/lib/features/matching/data/services/match_discovery_service.dart` — HTTP service
+- `flutter_app/lib/features/matching/data/providers/discovery_providers.dart` — Discovery state
+- `flutter_app/lib/features/matching/presentation/widgets/swipe_card_stack.dart` — Card stack animation
+- `flutter_app/lib/features/matching/presentation/widgets/trader_card.dart` — Card content
+- `flutter_app/lib/features/matching/presentation/widgets/match_celebration_overlay.dart` — Mutual match overlay
+- `flutter_app/lib/features/matching/presentation/screens/matches_screen.dart` — Screen integrating all above
 
 ## Guest Mode & Migration
 
@@ -405,6 +436,7 @@ SUPABASE_AUTH_EXTERNAL_APPLE_SECRET       # config.toml local dev
 GOOGLE_CLOUD_PROJECT_NUMBER               # Play Integrity token verification (Go .env + --dart-define)
 APPLE_APP_ID                              # App Attest verification, format: TEAMID.BUNDLEID (Go .env)
 ATTESTATION_DISABLED                      # Set to "true" to bypass attestation in dev (Go .env)
+GO_SERVICE_URL                            # Go matchmaking backend URL (--dart-define, e.g. http://localhost:8080)
 ```
 
 Deployment secrets (GitHub Actions): `APPSTORE_CONNECT_*`, `PLAY_SERVICE_ACCOUNT_JSON`, `ANDROID_KEYSTORE*`, `IOS_CERTIFICATE*`, `PROVISIONING_PROFILE`, `GOOGLE_WEB_CLIENT_ID`, `GOOGLE_IOS_CLIENT_ID`.

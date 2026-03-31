@@ -7,6 +7,7 @@ import '../../data/models/scored_match.dart';
 import '../../data/providers/discovery_providers.dart';
 import '../widgets/match_celebration_overlay.dart';
 import '../widgets/swipe_card_stack.dart';
+import '../widgets/trader_card_skeleton.dart';
 
 class MatchesScreen extends ConsumerStatefulWidget {
   const MatchesScreen({super.key});
@@ -62,46 +63,60 @@ class _MatchesScreenState extends ConsumerState<MatchesScreen> {
 
     return Stack(
       children: [
-        switch (discovery.status) {
-          DiscoveryStatus.awaitingLocation => const Center(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(Icons.location_searching, size: 48),
-                  SizedBox(height: SwappTokens.spacingLg),
-                  Text('Getting your location...'),
-                  SizedBox(height: SwappTokens.spacingLg),
-                  CircularProgressIndicator(),
-                ],
+        RefreshIndicator(
+          onRefresh: () async {
+            _initialized = false;
+            await ref.read(discoveryProvider.notifier).refresh();
+          },
+          child: CustomScrollView(
+            physics: const AlwaysScrollableScrollPhysics(),
+            slivers: [
+              SliverFillRemaining(
+                child: switch (discovery.status) {
+                  DiscoveryStatus.awaitingLocation => const Center(
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(Icons.location_searching, size: 48),
+                          SizedBox(height: SwappTokens.spacingLg),
+                          Text('Getting your location...'),
+                          SizedBox(height: SwappTokens.spacingLg),
+                          CircularProgressIndicator(),
+                        ],
+                      ),
+                    ),
+                  DiscoveryStatus.loading => _buildSkeletonStack(),
+                  DiscoveryStatus.ready => discovery.currentMatch != null
+                      ? _buildCardStack(discovery)
+                      : const Center(child: CircularProgressIndicator()),
+                  DiscoveryStatus.empty => SwappRestrictedEmptyState(
+                      icon: Icons.people_outline,
+                      title: 'No Traders Nearby',
+                      subtitle:
+                          'No one with matching stickers is nearby right now. '
+                          'Try again later or widen your search.',
+                      actionLabel: 'Refresh',
+                      onAction: () {
+                        _initialized = false;
+                        ref.read(discoveryProvider.notifier).refresh();
+                      },
+                    ),
+                  DiscoveryStatus.error => SwappRestrictedEmptyState(
+                      icon: Icons.error_outline,
+                      title: 'Oops!',
+                      subtitle: discovery.errorMessage ??
+                          'Something went wrong.',
+                      actionLabel: 'Try Again',
+                      onAction: () {
+                        _initialized = false;
+                        ref.read(discoveryProvider.notifier).refresh();
+                      },
+                    ),
+                },
               ),
-            ),
-          DiscoveryStatus.loading => const Center(
-              child: CircularProgressIndicator(),
-            ),
-          DiscoveryStatus.ready => _buildCardStack(discovery),
-          DiscoveryStatus.empty => SwappRestrictedEmptyState(
-              icon: Icons.people_outline,
-              title: 'No Traders Nearby',
-              subtitle:
-                  'No one with matching stickers is nearby right now. '
-                  'Try again later or widen your search.',
-              actionLabel: 'Refresh',
-              onAction: () {
-                _initialized = false;
-                ref.read(discoveryProvider.notifier).refresh();
-              },
-            ),
-          DiscoveryStatus.error => SwappRestrictedEmptyState(
-              icon: Icons.error_outline,
-              title: 'Oops!',
-              subtitle: discovery.errorMessage ?? 'Something went wrong.',
-              actionLabel: 'Try Again',
-              onAction: () {
-                _initialized = false;
-                ref.read(discoveryProvider.notifier).refresh();
-              },
-            ),
-        },
+            ],
+          ),
+        ),
 
         // Celebration overlay
         if (discovery.lastSwipeResult?.matched == true)
@@ -122,6 +137,83 @@ class _MatchesScreenState extends ConsumerState<MatchesScreen> {
     );
   }
 
+  Widget _buildSkeletonStack() {
+    return Padding(
+      padding: const EdgeInsets.symmetric(
+        horizontal: SwappTokens.spacingLg,
+      ),
+      child: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.symmetric(
+              vertical: SwappTokens.spacingSm,
+            ),
+            child: Row(
+              children: [
+                Container(
+                  width: 120,
+                  height: 14,
+                  decoration: BoxDecoration(
+                    color: Theme.of(context)
+                        .colorScheme
+                        .surfaceContainerHighest
+                        .withValues(alpha: 0.5),
+                    borderRadius:
+                        BorderRadius.circular(SwappTokens.radiusSm),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          Expanded(
+            child: Stack(
+              alignment: Alignment.center,
+              children: [
+                // Behind skeleton
+                Positioned(
+                  top: 20,
+                  left: 0,
+                  right: 0,
+                  child: Transform(
+                    alignment: Alignment.center,
+                    transform: Matrix4.identity()..scale(0.95),
+                    child: const Opacity(
+                      opacity: 0.5,
+                      child: IgnorePointer(
+                        child: TraderCardSkeleton(),
+                      ),
+                    ),
+                  ),
+                ),
+                // Top skeleton
+                const Positioned(
+                  top: 0,
+                  left: 0,
+                  right: 0,
+                  child: TraderCardSkeleton(),
+                ),
+              ],
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.only(
+              bottom: SwappTokens.spacingXl,
+              top: SwappTokens.spacingMd,
+            ),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                _SkeletonCircleButton(),
+                const SizedBox(width: SwappTokens.spacing3xl),
+                _SkeletonCircleButton(),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildCardStack(DiscoveryState discovery) {
     return Column(
       children: [
@@ -133,7 +225,7 @@ class _MatchesScreenState extends ConsumerState<MatchesScreen> {
           child: Row(
             children: [
               Text(
-                '${discovery.remainingCount} traders nearby',
+                '${discovery.totalCount} traders nearby',
                 style: Theme.of(context).textTheme.labelMedium?.copyWith(
                       color: Theme.of(context).colorScheme.onSurfaceVariant,
                     ),
@@ -215,6 +307,23 @@ class _ActionButton extends StatelessWidget {
           height: 64,
           child: Icon(icon, color: color, size: 32),
         ),
+      ),
+    );
+  }
+}
+
+class _SkeletonCircleButton extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: 64,
+      height: 64,
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        color: Theme.of(context)
+            .colorScheme
+            .surfaceContainerHighest
+            .withValues(alpha: 0.5),
       ),
     );
   }

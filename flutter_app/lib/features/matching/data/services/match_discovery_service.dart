@@ -6,6 +6,14 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import '../models/scored_match.dart';
 import '../models/swipe_result.dart';
 
+/// A paginated response from the matchmaking engine.
+class MatchPage {
+  final List<ScoredMatch> matches;
+  final int totalCount;
+
+  const MatchPage({required this.matches, required this.totalCount});
+}
+
 /// HTTP service for the Go matchmaking backend.
 ///
 /// Calls `GET /api/v1/matches` for discovery and
@@ -36,17 +44,21 @@ class MatchDiscoveryService {
     };
   }
 
-  /// Fetch scored match candidates from the Go matchmaking engine.
-  Future<List<ScoredMatch>> fetchMatches({
+  /// Fetch a page of scored match candidates from the Go matchmaking engine.
+  Future<MatchPage> fetchMatches({
     required double latitude,
     required double longitude,
     int radiusM = 5000,
+    int offset = 0,
+    int limit = 10,
   }) async {
     final uri = Uri.parse('$_baseUrl/api/v1/matches').replace(
       queryParameters: {
         'lat': latitude.toString(),
         'lng': longitude.toString(),
         'radius': radiusM.toString(),
+        'offset': offset.toString(),
+        'limit': limit.toString(),
       },
     );
 
@@ -60,9 +72,16 @@ class MatchDiscoveryService {
     }
 
     final List<dynamic> jsonList = jsonDecode(response.body) as List<dynamic>;
-    return jsonList
+    final matches = jsonList
         .map((json) => ScoredMatch.fromJson(json as Map<String, dynamic>))
         .toList();
+
+    final totalCount = int.tryParse(
+          response.headers['x-total-count'] ?? '',
+        ) ??
+        matches.length;
+
+    return MatchPage(matches: matches, totalCount: totalCount);
   }
 
   /// Record a right-swipe on [targetUserId].

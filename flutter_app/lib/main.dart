@@ -10,6 +10,7 @@ import 'package:flutter_app/core/services/device_integrity_http_client.dart';
 import 'package:flutter_app/core/services/device_integrity_service.dart';
 import 'package:flutter_app/core/services/pinned_http_client.dart';
 import 'package:flutter_app/core/services/push_notification_service.dart';
+import 'package:flutter_app/core/providers/push_notification_providers.dart';
 import 'package:flutter_app/features/stickers/data/services/guest_storage_service.dart';
 import 'package:flutter_app/app.dart';
 
@@ -54,16 +55,21 @@ void main() async {
   await GuestStorageService().init();
 
   // OneSignal uses dart:io Platform — skip on web.
+  PushNotificationService? pushService;
   if (!kIsWeb) {
-    final pushService = PushNotificationService(
+    pushService = PushNotificationService(
       appId: const String.fromEnvironment('ONESIGNAL_APP_ID'),
     );
     await pushService.initialize();
   }
 
   runApp(
-    const ProviderScope(
-      child: App(),
+    ProviderScope(
+      overrides: [
+        if (pushService != null)
+          pushNotificationServiceProvider.overrideWithValue(pushService),
+      ],
+      child: const App(),
     ),
   );
 }

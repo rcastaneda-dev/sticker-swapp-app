@@ -81,18 +81,18 @@ class SwipeCardStackState extends State<SwipeCardStack>
 
   // ── Gesture handlers ──────────────────────────────────────────────────
 
-  void _onPanUpdate(DragUpdateDetails details) {
+  void _onHorizontalDragUpdate(DragUpdateDetails details) {
     if (_isSwiping) return;
     final size = MediaQuery.of(context).size;
     setState(() {
       _dragAlignment += Alignment(
         details.delta.dx / (size.width / 2),
-        details.delta.dy / (size.height / 2),
+        0,
       );
     });
   }
 
-  void _onPanEnd(DragEndDetails details) {
+  void _onHorizontalDragEnd(DragEndDetails details) {
     if (_isSwiping) return;
 
     final velocity = details.velocity.pixelsPerSecond.dx;
@@ -115,7 +115,7 @@ class SwipeCardStackState extends State<SwipeCardStack>
     _animation = _controller.drive(
       AlignmentTween(
         begin: _dragAlignment,
-        end: Alignment(targetX, _dragAlignment.y * 0.5),
+        end: Alignment(targetX, 0),
       ),
     );
     _controller.forward(from: 0).then((_) {
@@ -200,8 +200,8 @@ class SwipeCardStackState extends State<SwipeCardStack>
   Widget _buildTopCard(BoxConstraints constraints) {
     return RepaintBoundary(
       child: GestureDetector(
-        onPanUpdate: _onPanUpdate,
-        onPanEnd: _onPanEnd,
+        onHorizontalDragUpdate: _onHorizontalDragUpdate,
+        onHorizontalDragEnd: _onHorizontalDragEnd,
         child: Align(
           alignment: _dragAlignment,
           child: Transform.rotate(

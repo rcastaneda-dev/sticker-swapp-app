@@ -5,6 +5,7 @@ import 'package:flutter_app/features/auth/data/providers/auth_providers.dart';
 import 'package:flutter_app/shared/shared.dart';
 import '../../data/models/scored_match.dart';
 import '../../data/providers/discovery_providers.dart';
+import '../../data/providers/match_notification_providers.dart';
 import '../widgets/match_celebration_overlay.dart';
 import '../widgets/swipe_card_stack.dart';
 import '../widgets/trader_card_skeleton.dart';
@@ -19,6 +20,7 @@ class MatchesScreen extends ConsumerStatefulWidget {
 class _MatchesScreenState extends ConsumerState<MatchesScreen> {
   final _stackKey = GlobalKey<SwipeCardStackState>();
   bool _initialized = false;
+  String? _lastMatchedDisplayName;
 
   @override
   Widget build(BuildContext context) {
@@ -28,6 +30,7 @@ class _MatchesScreenState extends ConsumerState<MatchesScreen> {
       appBar: AppBar(
         title: const Text('Sticker Swapp'),
         actions: [
+          if (!isUnder13) const _MatchesBadgeIcon(),
           IconButton(
             icon: const Icon(Icons.collections_bookmark),
             tooltip: 'My Collection',
@@ -124,7 +127,14 @@ class _MatchesScreenState extends ConsumerState<MatchesScreen> {
             child: MatchCelebrationOverlay(
               result: discovery.lastSwipeResult!,
               onDismiss: () {
+                final result = discovery.lastSwipeResult!;
+                final matchId = result.matchId!;
+                final name = _lastMatchedDisplayName ?? 'a trader';
+                ref.read(matchNotificationProvider.notifier).addMatch(
+                      UnviewedMatch(matchId: matchId, displayName: name),
+                    );
                 ref.read(discoveryProvider.notifier).clearLastSwipeResult();
+                _showMatchToast(matchId, name);
               },
               onOpenChat: () {
                 final matchId = discovery.lastSwipeResult!.matchId!;
@@ -275,10 +285,61 @@ class _MatchesScreenState extends ConsumerState<MatchesScreen> {
 
   void _onSwiped(ScoredMatch match, SwipeDirection direction) {
     if (direction == SwipeDirection.right) {
+      _lastMatchedDisplayName = match.displayName;
       ref.read(discoveryProvider.notifier).swipeRight();
     } else {
       ref.read(discoveryProvider.notifier).swipeLeft();
     }
+  }
+
+  void _showMatchToast(String matchId, String displayName) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Row(
+          children: [
+            Icon(Icons.handshake, color: SwappColors.gold, size: 20),
+            const SizedBox(width: SwappTokens.spacingSm),
+            Expanded(child: Text('Matched with $displayName!')),
+          ],
+        ),
+        action: SnackBarAction(
+          label: 'View',
+          onPressed: () {
+            ref.read(matchNotificationProvider.notifier).markViewed(matchId);
+            context.push('/matches/$matchId');
+          },
+        ),
+        behavior: SnackBarBehavior.floating,
+        duration: const Duration(seconds: 5),
+      ),
+    );
+  }
+}
+
+class _MatchesBadgeIcon extends ConsumerWidget {
+  const _MatchesBadgeIcon();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final count = ref.watch(unviewedMatchCountProvider);
+    final mostRecent = ref.watch(mostRecentUnviewedMatchProvider);
+
+    return IconButton(
+      icon: Badge(
+        isLabelVisible: count > 0,
+        label: Text(count.toString()),
+        child: const Icon(Icons.chat_bubble_outline),
+      ),
+      tooltip: 'Recent Matches',
+      onPressed: mostRecent != null
+          ? () {
+              ref
+                  .read(matchNotificationProvider.notifier)
+                  .markViewed(mostRecent.matchId);
+              context.push('/matches/${mostRecent.matchId}');
+            }
+          : null,
+    );
   }
 }
 

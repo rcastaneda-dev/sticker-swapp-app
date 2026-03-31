@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:flutter_app/features/auth/data/providers/auth_providers.dart';
 import 'package:flutter_app/shared/shared.dart';
+import '../../data/providers/match_notification_providers.dart';
 
 class MatchScreen extends ConsumerWidget {
   final String matchId;
@@ -12,6 +13,10 @@ class MatchScreen extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final isUnder13 = ref.watch(isUnder13Provider) ?? false;
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      ref.read(matchNotificationProvider.notifier).markViewed(matchId);
+    });
 
     if (isUnder13) {
       return Scaffold(

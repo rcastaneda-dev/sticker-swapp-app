@@ -247,6 +247,8 @@ JWT expiry: 15 min (900s in config.toml) with refresh token rotation (10s reuse 
 
 **Match celebration:** On mutual match (201 response), a `MatchCelebrationOverlay` renders with elastic scale-in animation. Two CTAs: "Open Chat" → `/matches/{matchId}`, "Keep Swiping" → dismiss.
 
+**Match notification (in-app):** When the user dismisses the celebration overlay via "Keep Swiping", the match is tracked in `matchNotificationProvider` (in-memory `List<UnviewedMatch>`). A floating SnackBar toast shows "Matched with {name}!" with a "View" action navigating to `/matches/{matchId}`. An AppBar badge icon (`Icons.chat_bubble_outline` with `Badge` count) appears on the discovery screen — tapping it navigates to the most recent unviewed match. Viewing any match detail screen (`MatchScreen`) automatically marks that match as viewed (badge count decrements). Badge is hidden for under-13 users.
+
 **Dart-define:** `GO_SERVICE_URL` — base URL for the Go matchmaking backend (e.g., `http://localhost:8080` for local dev).
 
 **Models:**
@@ -256,12 +258,16 @@ JWT expiry: 15 min (900s in config.toml) with refresh token rotation (10s reuse 
 **Providers:**
 - `matchDiscoveryServiceProvider` — `Provider<MatchDiscoveryService>` singleton
 - `discoveryProvider` — `NotifierProvider<DiscoveryNotifier, DiscoveryState>` — state machine (awaitingLocation → loading → ready/empty/error), card index management, swipe actions
+- `matchNotificationProvider` — `NotifierProvider<MatchNotificationNotifier, List<UnviewedMatch>>` — in-memory unviewed match tracking (addMatch, markViewed, clear)
+- `unviewedMatchCountProvider` — `Provider<int>` — derived badge count
+- `mostRecentUnviewedMatchProvider` — `Provider<UnviewedMatch?>` — most recent unviewed match for badge tap navigation
 
 **Key files:**
 - `flutter_app/lib/features/matching/data/models/scored_match.dart` — ScoredMatch model
 - `flutter_app/lib/features/matching/data/models/swipe_result.dart` — SwipeResult model
 - `flutter_app/lib/features/matching/data/services/match_discovery_service.dart` — HTTP service
 - `flutter_app/lib/features/matching/data/providers/discovery_providers.dart` — Discovery state
+- `flutter_app/lib/features/matching/data/providers/match_notification_providers.dart` — Match notification state
 - `flutter_app/lib/features/matching/presentation/widgets/swipe_card_stack.dart` — Card stack animation
 - `flutter_app/lib/features/matching/presentation/widgets/trader_card.dart` — Card content
 - `flutter_app/lib/features/matching/presentation/widgets/match_celebration_overlay.dart` — Mutual match overlay

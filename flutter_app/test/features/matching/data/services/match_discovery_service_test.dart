@@ -11,6 +11,7 @@ class _FakeHttpClient extends http.BaseClient {
   http.BaseRequest? lastRequest;
   String responseBody = '[]';
   int responseStatus = 200;
+  Map<String, String> responseHeaders = {};
 
   @override
   Future<http.StreamedResponse> send(http.BaseRequest request) async {
@@ -18,6 +19,7 @@ class _FakeHttpClient extends http.BaseClient {
     return http.StreamedResponse(
       Stream.value(utf8.encode(responseBody)),
       responseStatus,
+      headers: responseHeaders,
     );
   }
 }
@@ -76,6 +78,22 @@ void main() {
       expect(uri.queryParameters['radius'], '3000');
     });
 
+    test('sends offset and limit query parameters', () async {
+      httpClient.responseBody = '[]';
+      httpClient.responseStatus = 200;
+
+      await service.fetchMatches(
+        latitude: 13.69,
+        longitude: -89.21,
+        offset: 10,
+        limit: 5,
+      );
+
+      final uri = httpClient.lastRequest!.url;
+      expect(uri.queryParameters['offset'], '10');
+      expect(uri.queryParameters['limit'], '5');
+    });
+
     test('includes authorization header', () async {
       httpClient.responseBody = '[]';
       httpClient.responseStatus = 200;
@@ -88,7 +106,8 @@ void main() {
       );
     });
 
-    test('parses response into List<ScoredMatch>', () async {
+    test('parses response into MatchPage with matches and totalCount',
+        () async {
       httpClient.responseBody = jsonEncode([
         {
           'user_id': 'u1',
@@ -105,22 +124,49 @@ void main() {
         },
       ]);
       httpClient.responseStatus = 200;
+      httpClient.responseHeaders = {'x-total-count': '25'};
 
-      final matches = await service.fetchMatches(latitude: 0, longitude: 0);
+      final page = await service.fetchMatches(latitude: 0, longitude: 0);
 
-      expect(matches, hasLength(1));
-      expect(matches.first.userId, 'u1');
-      expect(matches.first.displayName, 'Test User');
-      expect(matches.first.distanceM, 500.0);
+      expect(page.matches, hasLength(1));
+      expect(page.matches.first.userId, 'u1');
+      expect(page.matches.first.displayName, 'Test User');
+      expect(page.totalCount, 25);
     });
 
-    test('returns empty list for empty response', () async {
+    test('returns empty MatchPage for empty response', () async {
       httpClient.responseBody = '[]';
       httpClient.responseStatus = 200;
+      httpClient.responseHeaders = {'x-total-count': '0'};
 
-      final matches = await service.fetchMatches(latitude: 0, longitude: 0);
+      final page = await service.fetchMatches(latitude: 0, longitude: 0);
 
-      expect(matches, isEmpty);
+      expect(page.matches, isEmpty);
+      expect(page.totalCount, 0);
+    });
+
+    test('falls back to matches.length when X-Total-Count missing', () async {
+      httpClient.responseBody = jsonEncode([
+        {
+          'user_id': 'u1',
+          'display_name': 'Test',
+          'distance_m': 100.0,
+          'duplicate_count': 1,
+          'needed_count': 1,
+          'they_have_i_need': 1,
+          'i_have_they_need': 1,
+          'proximity_score': 0.9,
+          'reciprocal_score': 0.5,
+          'activity_score': 0.8,
+          'total_score': 0.76,
+        },
+      ]);
+      httpClient.responseStatus = 200;
+      httpClient.responseHeaders = {};
+
+      final page = await service.fetchMatches(latitude: 0, longitude: 0);
+
+      expect(page.totalCount, 1);
     });
 
     test('throws MatchDiscoveryException on non-200', () async {

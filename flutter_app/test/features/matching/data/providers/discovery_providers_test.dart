@@ -53,19 +53,15 @@ ScoredMatch _match({String id = 'u1', String name = 'Test'}) => ScoredMatch(
 
 // ── Stub LocationNotifier ────────────────────────────────────────────────
 
-/// Stub that simulates `requestAndUpdate()` returning a successful location
-/// or a permission denial, without touching Supabase.
 class _StubLocationNotifier extends LocationNotifier {
   final LocationPermissionStatus? _permissionResult;
 
-  /// Pass `null` for success (location updated), or a status for failure.
   _StubLocationNotifier({LocationPermissionStatus? permissionResult})
       : _permissionResult = permissionResult;
 
   @override
   Future<LocationUpdateResult?> build() async {
     if (_permissionResult == null) {
-      // Simulate a successful location update.
       return LocationUpdateResult.success(
         latitude: 13.6929,
         longitude: -89.2182,
@@ -80,7 +76,6 @@ class _StubLocationNotifier extends LocationNotifier {
     if (_permissionResult != null) {
       return _permissionResult;
     }
-    // Simulate success: update state with a location result.
     state = AsyncData(LocationUpdateResult.success(
       latitude: 13.6929,
       longitude: -89.2182,
@@ -94,11 +89,16 @@ class _StubLocationNotifier extends LocationNotifier {
 
 class _FakeMatchDiscoveryService extends MatchDiscoveryService {
   List<ScoredMatch> matchesToReturn;
+  int totalCountToReturn;
   SwipeResult swipeResultToReturn;
   bool shouldThrow;
+  int fetchCallCount = 0;
+  int? lastOffset;
+  int? lastLimit;
 
   _FakeMatchDiscoveryService({
     this.matchesToReturn = const [],
+    this.totalCountToReturn = 0,
     SwipeResult? swipeResult,
     this.shouldThrow = false,
   })  : swipeResultToReturn = swipeResult ??
@@ -106,15 +106,29 @@ class _FakeMatchDiscoveryService extends MatchDiscoveryService {
         super(baseUrl: 'https://test');
 
   @override
-  Future<List<ScoredMatch>> fetchMatches({
+  Future<MatchPage> fetchMatches({
     required double latitude,
     required double longitude,
     int radiusM = 5000,
+    int offset = 0,
+    int limit = 10,
   }) async {
+    fetchCallCount++;
+    lastOffset = offset;
+    lastLimit = limit;
     if (shouldThrow) {
       throw const MatchDiscoveryException('error', statusCode: 500);
     }
-    return matchesToReturn;
+    // Simulate pagination: slice matchesToReturn based on offset/limit.
+    final start = offset.clamp(0, matchesToReturn.length);
+    final end = (offset + limit).clamp(0, matchesToReturn.length);
+    final page = matchesToReturn.sublist(start, end);
+    return MatchPage(
+      matches: page,
+      totalCount: totalCountToReturn > 0
+          ? totalCountToReturn
+          : matchesToReturn.length,
+    );
   }
 
   @override
@@ -135,12 +149,14 @@ void main() {
 
     ProviderContainer createContainer({
       List<ScoredMatch>? matches,
+      int? totalCount,
       SwipeResult? swipeResult,
       bool serviceThrows = false,
       LocationPermissionStatus? locationResult,
     }) {
       fakeService = _FakeMatchDiscoveryService(
         matchesToReturn: matches ?? [],
+        totalCountToReturn: totalCount ?? 0,
         swipeResult: swipeResult,
         shouldThrow: serviceThrows,
       );
@@ -269,7 +285,8 @@ void main() {
       expect(state.currentMatch!.userId, 'u2');
     });
 
-    test('last card swiped transitions to empty', () async {
+    test('last card swiped transitions to empty when no more pages',
+        () async {
       container = createContainer(matches: [_match(id: 'u1')]);
 
       await container.read(discoveryProvider.notifier).initialize();
@@ -324,6 +341,144 @@ void main() {
 
       container.read(discoveryProvider.notifier).swipeLeft();
       expect(container.read(discoveryProvider).remainingCount, 2);
+    });
+
+    // ── Pagination tests ──────────────────────────────────────────────────
+
+    test('initialize sets hasMore when totalCount > page size', () async {
+      container = createContainer(
+        matches: List.generate(
+          15,
+          (i) => _match(id: 'u$i', name: 'User $i'),
+        ),
+        totalCount: 15,
+      );
+
+      await container.read(discoveryProvider.notifier).initialize();
+
+      final state = container.read(discoveryProvider);
+      expect(state.status, DiscoveryStatus.ready);
+      expect(state.matches, hasLength(10));
+      expect(state.hasMore, isTrue);
+      expect(state.totalCount, 15);
+    });
+
+    test('initialize passes offset 0 to service', () async {
+      container = createContainer(
+        matches: [_match(id: 'u1')],
+      );
+
+      await container.read(discoveryProvider.notifier).initialize();
+
+      expect(fakeService.lastOffset, 0);
+    });
+
+    test('loadMore appends next page of matches', () async {
+      container = createContainer(
+        matches: List.generate(
+          15,
+          (i) => _match(id: 'u$i', name: 'User $i'),
+        ),
+        totalCount: 15,
+      );
+
+      await container.read(discoveryProvider.notifier).initialize();
+      expect(container.read(discoveryProvider).matches, hasLength(10));
+
+      await container.read(discoveryProvider.notifier).loadMore();
+
+      final state = container.read(discoveryProvider);
+      expect(state.matches, hasLength(15));
+      expect(state.hasMore, isFalse);
+    });
+
+    test('loadMore does nothing when hasMore is false', () async {
+      container = createContainer(
+        matches: [_match(id: 'u1')],
+      );
+
+      await container.read(discoveryProvider.notifier).initialize();
+      final callsBefore = fakeService.fetchCallCount;
+
+      await container.read(discoveryProvider.notifier).loadMore();
+
+      expect(fakeService.fetchCallCount, callsBefore);
+    });
+
+    test('loadMore does nothing when already loading', () async {
+      container = createContainer(
+        matches: List.generate(
+          15,
+          (i) => _match(id: 'u$i', name: 'User $i'),
+        ),
+        totalCount: 15,
+      );
+
+      await container.read(discoveryProvider.notifier).initialize();
+
+      final future1 = container.read(discoveryProvider.notifier).loadMore();
+      final callsDuringFirst = fakeService.fetchCallCount;
+      final future2 = container.read(discoveryProvider.notifier).loadMore();
+
+      await Future.wait([future1, future2]);
+
+      expect(fakeService.fetchCallCount, callsDuringFirst);
+    });
+
+    test('loadMore failure does not crash, sets isLoadingMore false',
+        () async {
+      container = createContainer(
+        matches: List.generate(
+          15,
+          (i) => _match(id: 'u$i', name: 'User $i'),
+        ),
+        totalCount: 15,
+      );
+
+      await container.read(discoveryProvider.notifier).initialize();
+      expect(container.read(discoveryProvider).hasMore, isTrue);
+
+      fakeService.shouldThrow = true;
+
+      await container.read(discoveryProvider.notifier).loadMore();
+
+      final state = container.read(discoveryProvider);
+      expect(state.status, DiscoveryStatus.ready);
+      expect(state.isLoadingMore, isFalse);
+    });
+
+    test('swiping near end triggers prefetch', () async {
+      final allMatches = List.generate(
+        20,
+        (i) => _match(id: 'u$i', name: 'User $i'),
+      );
+      container = createContainer(
+        matches: allMatches,
+        totalCount: 20,
+      );
+
+      await container.read(discoveryProvider.notifier).initialize();
+      final callsAfterInit = fakeService.fetchCallCount;
+
+      final notifier = container.read(discoveryProvider.notifier);
+      for (int i = 0; i < 7; i++) {
+        notifier.swipeLeft();
+      }
+
+      final state = container.read(discoveryProvider);
+      expect(state.currentIndex, 7);
+      expect(fakeService.fetchCallCount, greaterThan(callsAfterInit));
+    });
+
+    test('totalCount reflects server total in state', () async {
+      container = createContainer(
+        matches: [_match(id: 'u1'), _match(id: 'u2')],
+        totalCount: 25,
+      );
+
+      await container.read(discoveryProvider.notifier).initialize();
+
+      expect(container.read(discoveryProvider).totalCount, 25);
     });
   });
 }

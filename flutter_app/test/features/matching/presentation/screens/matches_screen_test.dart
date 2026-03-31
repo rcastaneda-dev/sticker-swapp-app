@@ -11,6 +11,7 @@ import 'package:flutter_app/features/matching/data/providers/discovery_providers
 import 'package:flutter_app/features/matching/data/providers/location_providers.dart';
 import 'package:flutter_app/features/matching/data/services/match_discovery_service.dart';
 import 'package:flutter_app/features/matching/presentation/screens/matches_screen.dart';
+import 'package:flutter_app/features/matching/presentation/widgets/trader_card_skeleton.dart';
 import 'package:flutter_app/shared/shared.dart';
 
 // ── Helpers ───────────────────────────────────────────────────────────────
@@ -71,12 +72,14 @@ class _FakeMatchDiscoveryService extends MatchDiscoveryService {
   _FakeMatchDiscoveryService() : super(baseUrl: 'https://test');
 
   @override
-  Future<List<ScoredMatch>> fetchMatches({
+  Future<MatchPage> fetchMatches({
     required double latitude,
     required double longitude,
     int radiusM = 5000,
+    int offset = 0,
+    int limit = 10,
   }) async {
-    return [];
+    return const MatchPage(matches: [], totalCount: 0);
   }
 
   @override
@@ -107,6 +110,9 @@ class _StubDiscoveryNotifier extends DiscoveryNotifier {
 
   @override
   void clearLastSwipeResult() {}
+
+  @override
+  Future<void> loadMore() async {}
 }
 
 Widget _buildSubject({
@@ -171,9 +177,21 @@ void main() {
         'age_verified_at': '2024-01-01T00:00:00Z',
       }));
 
-      // Before post-frame callback fires
       expect(find.text('Trading Unlocks Later'), findsNothing);
       expect(find.text('Getting your location...'), findsOneWidget);
+    });
+
+    testWidgets('shows skeleton cards during loading state', (tester) async {
+      await tester.pumpWidget(_buildSubject(
+        metadata: {
+          'is_under_13': false,
+          'age_verified_at': '2024-01-01T00:00:00Z',
+        },
+        discoveryState: const DiscoveryState(status: DiscoveryStatus.loading),
+      ));
+      await tester.pump();
+
+      expect(find.byType(TraderCardSkeleton), findsWidgets);
     });
 
     testWidgets('shows card stack when discovery state is ready',
@@ -187,6 +205,7 @@ void main() {
           status: DiscoveryStatus.ready,
           matches: [_match(id: 'u1', name: 'Carlos'), _match(id: 'u2')],
           currentIndex: 0,
+          totalCount: 2,
         ),
       ));
       await tester.pump();
@@ -195,6 +214,25 @@ void main() {
       expect(find.text('2 traders nearby'), findsOneWidget);
       expect(find.byIcon(Icons.close), findsOneWidget);
       expect(find.byIcon(Icons.favorite), findsOneWidget);
+    });
+
+    testWidgets('shows totalCount in header instead of remainingCount',
+        (tester) async {
+      await tester.pumpWidget(_buildSubject(
+        metadata: {
+          'is_under_13': false,
+          'age_verified_at': '2024-01-01T00:00:00Z',
+        },
+        discoveryState: DiscoveryState(
+          status: DiscoveryStatus.ready,
+          matches: [_match(id: 'u1'), _match(id: 'u2')],
+          currentIndex: 0,
+          totalCount: 25,
+        ),
+      ));
+      await tester.pump();
+
+      expect(find.text('25 traders nearby'), findsOneWidget);
     });
 
     testWidgets('shows empty state when no traders nearby', (tester) async {
@@ -235,8 +273,41 @@ void main() {
       }));
 
       expect(find.text('Trading Unlocks Later'), findsNothing);
-      // Shows the discovery UI (location loading) instead of restricted state
       expect(find.text('Getting your location...'), findsOneWidget);
+    });
+
+    testWidgets('shows spinner when ready but currentMatch is null',
+        (tester) async {
+      // This happens when all loaded cards are swiped but hasMore is true
+      await tester.pumpWidget(_buildSubject(
+        metadata: {
+          'is_under_13': false,
+          'age_verified_at': '2024-01-01T00:00:00Z',
+        },
+        discoveryState: DiscoveryState(
+          status: DiscoveryStatus.ready,
+          matches: [_match(id: 'u1')],
+          currentIndex: 1, // Past last match
+          hasMore: true,
+          isLoadingMore: true,
+        ),
+      ));
+      await tester.pump();
+
+      expect(find.byType(CircularProgressIndicator), findsOneWidget);
+    });
+
+    testWidgets('has RefreshIndicator wrapping the body', (tester) async {
+      await tester.pumpWidget(_buildSubject(
+        metadata: {
+          'is_under_13': false,
+          'age_verified_at': '2024-01-01T00:00:00Z',
+        },
+        discoveryState: const DiscoveryState(status: DiscoveryStatus.empty),
+      ));
+      await tester.pump();
+
+      expect(find.byType(RefreshIndicator), findsOneWidget);
     });
   });
 }

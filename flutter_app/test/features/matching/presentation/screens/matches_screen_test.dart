@@ -9,6 +9,7 @@ import 'package:flutter_app/features/matching/data/models/scored_match.dart';
 import 'package:flutter_app/features/matching/data/models/swipe_result.dart';
 import 'package:flutter_app/features/matching/data/providers/discovery_providers.dart';
 import 'package:flutter_app/features/matching/data/providers/location_providers.dart';
+import 'package:flutter_app/features/matching/data/providers/match_notification_providers.dart';
 import 'package:flutter_app/features/matching/data/services/match_discovery_service.dart';
 import 'package:flutter_app/features/matching/presentation/screens/matches_screen.dart';
 import 'package:flutter_app/features/matching/presentation/widgets/trader_card_skeleton.dart';
@@ -118,6 +119,7 @@ class _StubDiscoveryNotifier extends DiscoveryNotifier {
 Widget _buildSubject({
   Map<String, dynamic>? metadata,
   DiscoveryState? discoveryState,
+  List<UnviewedMatch>? unviewedMatches,
 }) {
   return ProviderScope(
     overrides: [
@@ -130,12 +132,24 @@ Widget _buildSubject({
       if (discoveryState != null)
         discoveryProvider
             .overrideWith(() => _StubDiscoveryNotifier(discoveryState)),
+      if (unviewedMatches != null)
+        matchNotificationProvider.overrideWith(
+          () => _StubMatchNotificationNotifier(unviewedMatches),
+        ),
     ],
     child: MaterialApp(
       theme: SwappTheme.light,
       home: const MatchesScreen(),
     ),
   );
+}
+
+class _StubMatchNotificationNotifier extends MatchNotificationNotifier {
+  final List<UnviewedMatch> _initial;
+  _StubMatchNotificationNotifier(this._initial);
+
+  @override
+  List<UnviewedMatch> build() => _initial;
 }
 
 ScoredMatch _match({String id = 'u1', String name = 'Test User'}) =>
@@ -308,6 +322,98 @@ void main() {
       await tester.pump();
 
       expect(find.byType(RefreshIndicator), findsOneWidget);
+    });
+
+    testWidgets('shows badge with count when unviewed matches exist',
+        (tester) async {
+      await tester.pumpWidget(_buildSubject(
+        metadata: {
+          'is_under_13': false,
+          'age_verified_at': '2024-01-01T00:00:00Z',
+        },
+        discoveryState: const DiscoveryState(status: DiscoveryStatus.empty),
+        unviewedMatches: const [
+          UnviewedMatch(matchId: 'm1', displayName: 'Carlos'),
+          UnviewedMatch(matchId: 'm2', displayName: 'Diego'),
+        ],
+      ));
+      await tester.pump();
+
+      expect(find.byIcon(Icons.chat_bubble_outline), findsOneWidget);
+      expect(find.byType(Badge), findsOneWidget);
+      expect(find.text('2'), findsOneWidget);
+    });
+
+    testWidgets('badge icon present but disabled when no unviewed matches',
+        (tester) async {
+      await tester.pumpWidget(_buildSubject(
+        metadata: {
+          'is_under_13': false,
+          'age_verified_at': '2024-01-01T00:00:00Z',
+        },
+        discoveryState: const DiscoveryState(status: DiscoveryStatus.empty),
+        unviewedMatches: const [],
+      ));
+      await tester.pump();
+
+      expect(find.byIcon(Icons.chat_bubble_outline), findsOneWidget);
+      final iconButton = tester.widget<IconButton>(
+        find.widgetWithIcon(IconButton, Icons.chat_bubble_outline),
+      );
+      expect(iconButton.onPressed, isNull);
+    });
+
+    testWidgets('badge icon hidden for under-13 users', (tester) async {
+      await tester.pumpWidget(_buildSubject(
+        metadata: {
+          'is_under_13': true,
+          'age_verified_at': '2024-01-01T00:00:00Z',
+          'parental_consent_at': '2024-06-01T00:00:00Z',
+        },
+        unviewedMatches: const [
+          UnviewedMatch(matchId: 'm1', displayName: 'Carlos'),
+        ],
+      ));
+
+      expect(find.byIcon(Icons.chat_bubble_outline), findsNothing);
+    });
+
+    testWidgets(
+        'shows SnackBar when Keep Swiping tapped on match celebration',
+        (tester) async {
+      await tester.pumpWidget(_buildSubject(
+        metadata: {
+          'is_under_13': false,
+          'age_verified_at': '2024-01-01T00:00:00Z',
+        },
+        discoveryState: DiscoveryState(
+          status: DiscoveryStatus.ready,
+          matches: [_match(id: 'u1', name: 'Carlos')],
+          currentIndex: 0,
+          totalCount: 1,
+          lastSwipeResult: SwipeResult(
+            matched: true,
+            swipeRecorded: true,
+            matchId: 'match-123',
+            user1Id: 'test-user-id',
+            user2Id: 'u1',
+            status: 'PENDING',
+            createdAt: DateTime(2026, 3, 30),
+          ),
+        ),
+      ));
+      await tester.pump();
+
+      // Celebration overlay should be visible
+      expect(find.text("It's a Match!"), findsOneWidget);
+
+      // Tap "Keep Swiping"
+      await tester.tap(find.text('Keep Swiping'));
+      await tester.pump();
+
+      // SnackBar should appear
+      expect(find.byType(SnackBar), findsOneWidget);
+      expect(find.text('View'), findsOneWidget);
     });
   });
 }

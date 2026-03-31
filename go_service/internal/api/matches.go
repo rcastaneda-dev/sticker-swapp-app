@@ -1,12 +1,15 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"regexp"
 
 	"github.com/wc2026-stickers/sticker-swap-app/go_service/internal/ably"
 	"github.com/wc2026-stickers/sticker-swap-app/go_service/internal/matches"
+	"github.com/wc2026-stickers/sticker-swap-app/go_service/internal/onesignal"
 )
 
 // uuidRegex validates UUID format.
@@ -16,12 +19,14 @@ var uuidRegex = regexp.MustCompile(
 
 // MatchHandler serves the match creation endpoint.
 type MatchHandler struct {
-	creator matches.MatchCreator
+	creator  matches.MatchCreator
+	notifier onesignal.Notifier
+	names    DisplayNameLookup
 }
 
-// NewMatchHandler creates a handler with the given MatchCreator.
-func NewMatchHandler(creator matches.MatchCreator) *MatchHandler {
-	return &MatchHandler{creator: creator}
+// NewMatchHandler creates a handler with the given MatchCreator, push notifier, and name lookup.
+func NewMatchHandler(creator matches.MatchCreator, notifier onesignal.Notifier, names DisplayNameLookup) *MatchHandler {
+	return &MatchHandler{creator: creator, notifier: notifier, names: names}
 }
 
 // createMatchRequest is the expected JSON body for POST /api/v1/matches.
@@ -69,6 +74,38 @@ func (h *MatchHandler) CreateMatch(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	if result.Matched {
 		w.WriteHeader(http.StatusCreated)
+
+		// Send push notification to the other user asynchronously.
+		go h.sendMatchPush(userID, result)
 	}
 	json.NewEncoder(w).Encode(result)
+}
+
+// sendMatchPush notifies the non-caller user about a new mutual match.
+func (h *MatchHandler) sendMatchPush(callerID string, result *matches.CreateMatchResult) {
+	recipientID := recipientFromMatch(callerID, result)
+	if recipientID == "" || result.MatchID == nil {
+		return
+	}
+
+	ctx := context.Background()
+	displayName := h.names.LookupDisplayName(ctx, callerID)
+	if err := h.notifier.NotifyMatchCreated(ctx, recipientID, *result.MatchID, displayName); err != nil {
+		slog.Warn("Failed to send match push",
+			"error", err,
+			"match_id", *result.MatchID,
+			"recipient", recipientID,
+		)
+	}
+}
+
+// recipientFromMatch returns the user ID that is NOT the caller.
+func recipientFromMatch(callerID string, result *matches.CreateMatchResult) string {
+	if result.User1ID != nil && *result.User1ID != callerID {
+		return *result.User1ID
+	}
+	if result.User2ID != nil && *result.User2ID != callerID {
+		return *result.User2ID
+	}
+	return ""
 }

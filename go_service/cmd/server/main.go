@@ -16,6 +16,7 @@ import (
 	"github.com/wc2026-stickers/sticker-swap-app/go_service/internal/db"
 	"github.com/wc2026-stickers/sticker-swap-app/go_service/internal/matches"
 	"github.com/wc2026-stickers/sticker-swap-app/go_service/internal/matchmaking"
+	"github.com/wc2026-stickers/sticker-swap-app/go_service/internal/onesignal"
 	"github.com/wc2026-stickers/sticker-swap-app/go_service/internal/ws"
 )
 
@@ -65,6 +66,21 @@ func main() {
 	// Initialize match creator
 	matchCreator := matches.NewMatchCreator(pool)
 
+	// Initialize push notifications — optional (NoopNotifier if credentials missing)
+	var pushNotifier onesignal.Notifier
+	onesignalAppID := os.Getenv("ONESIGNAL_APP_ID")
+	onesignalAPIKey := os.Getenv("ONESIGNAL_REST_API_KEY")
+	if onesignalAppID != "" && onesignalAPIKey != "" {
+		pushNotifier = onesignal.NewPushNotifier(onesignal.Config{
+			AppID:      onesignalAppID,
+			RestAPIKey: onesignalAPIKey,
+		})
+		log.Println("OneSignal push notifications enabled")
+	} else {
+		pushNotifier = &onesignal.NoopNotifier{}
+		log.Println("OneSignal push notifications DISABLED (missing credentials)")
+	}
+
 	// Initialize WebSocket connection manager
 	wsCfg := ws.DefaultConfig()
 	wsManager := ws.NewManager(wsCfg)
@@ -81,6 +97,8 @@ func main() {
 		MatchCache:          matchCache,
 		WSHandler:           wsHandler,
 		MatchCreator:        matchCreator,
+		PushNotifier:        pushNotifier,
+		DisplayNames:        &api.DBDisplayNameLookup{Pool: pool},
 	})
 
 	// Start HTTP server

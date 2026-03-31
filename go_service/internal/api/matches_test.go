@@ -7,15 +7,19 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/wc2026-stickers/sticker-swap-app/go_service/internal/ably"
 	"github.com/wc2026-stickers/sticker-swap-app/go_service/internal/matches"
+	"github.com/wc2026-stickers/sticker-swap-app/go_service/internal/onesignal"
 )
 
-// Compile-time interface check.
+// Compile-time interface checks.
 var _ matches.MatchCreator = (*mockMatchCreator)(nil)
+var _ onesignal.Notifier = (*mockNotifier)(nil)
+var _ DisplayNameLookup = (*mockDisplayNameLookup)(nil)
 
 type mockMatchCreator struct {
 	result   *matches.CreateMatchResult
@@ -32,6 +36,50 @@ func (m *mockMatchCreator) CreateMatchIfMutual(_ context.Context, callerID, targ
 	return m.result, m.err
 }
 
+type mockNotifier struct {
+	mu            sync.Mutex
+	called        bool
+	recipientID   string
+	matchID       string
+	displayName   string
+	err           error
+	notifyCh      chan struct{} // closed when NotifyMatchCreated is called
+}
+
+func newMockNotifier() *mockNotifier {
+	return &mockNotifier{notifyCh: make(chan struct{})}
+}
+
+func (m *mockNotifier) NotifyMatchCreated(_ context.Context, recipientID, matchID, displayName string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.called = true
+	m.recipientID = recipientID
+	m.matchID = matchID
+	m.displayName = displayName
+	select {
+	case <-m.notifyCh:
+	default:
+		close(m.notifyCh)
+	}
+	return m.err
+}
+
+type mockDisplayNameLookup struct {
+	name string
+}
+
+func (m *mockDisplayNameLookup) LookupDisplayName(_ context.Context, _ string) string {
+	if m.name == "" {
+		return "Someone"
+	}
+	return m.name
+}
+
+func newTestHandler(creator matches.MatchCreator) *MatchHandler {
+	return NewMatchHandler(creator, newMockNotifier(), &mockDisplayNameLookup{})
+}
+
 func newCreateMatchRequest(userID string, body interface{}) *http.Request {
 	var bodyBytes []byte
 	if body != nil {
@@ -46,7 +94,7 @@ func newCreateMatchRequest(userID string, body interface{}) *http.Request {
 	return req
 }
 
-func strPtr(s string) *string    { return &s }
+func strPtr(s string) *string        { return &s }
 func timePtr(t time.Time) *time.Time { return &t }
 
 func TestCreateMatch_MutualMatch(t *testing.T) {
@@ -63,7 +111,7 @@ func TestCreateMatch_MutualMatch(t *testing.T) {
 			CreatedAt: timePtr(now),
 		},
 	}
-	handler := NewMatchHandler(creator)
+	handler := newTestHandler(creator)
 
 	req := newCreateMatchRequest("11111111-1111-1111-1111-111111111111", createMatchRequest{
 		TargetUserID: "22222222-2222-2222-2222-222222222222",
@@ -97,7 +145,7 @@ func TestCreateMatch_SwipeOnly(t *testing.T) {
 			SwipeRecorded: true,
 		},
 	}
-	handler := NewMatchHandler(creator)
+	handler := newTestHandler(creator)
 
 	req := newCreateMatchRequest("11111111-1111-1111-1111-111111111111", createMatchRequest{
 		TargetUserID: "22222222-2222-2222-2222-222222222222",
@@ -122,7 +170,7 @@ func TestCreateMatch_SwipeOnly(t *testing.T) {
 }
 
 func TestCreateMatch_MissingBody(t *testing.T) {
-	handler := NewMatchHandler(&mockMatchCreator{})
+	handler := newTestHandler(&mockMatchCreator{})
 
 	req := httptest.NewRequest("POST", "/api/v1/matches", nil)
 	ctx := context.WithValue(req.Context(), ably.UserIDKey(), "11111111-1111-1111-1111-111111111111")
@@ -138,7 +186,7 @@ func TestCreateMatch_MissingBody(t *testing.T) {
 }
 
 func TestCreateMatch_MissingTargetUserID(t *testing.T) {
-	handler := NewMatchHandler(&mockMatchCreator{})
+	handler := newTestHandler(&mockMatchCreator{})
 
 	req := newCreateMatchRequest("11111111-1111-1111-1111-111111111111", createMatchRequest{
 		TargetUserID: "",
@@ -153,7 +201,7 @@ func TestCreateMatch_MissingTargetUserID(t *testing.T) {
 }
 
 func TestCreateMatch_InvalidUUID(t *testing.T) {
-	handler := NewMatchHandler(&mockMatchCreator{})
+	handler := newTestHandler(&mockMatchCreator{})
 
 	req := newCreateMatchRequest("11111111-1111-1111-1111-111111111111", createMatchRequest{
 		TargetUserID: "not-a-uuid",
@@ -169,7 +217,7 @@ func TestCreateMatch_InvalidUUID(t *testing.T) {
 
 func TestCreateMatch_SelfSwipe(t *testing.T) {
 	creator := &mockMatchCreator{}
-	handler := NewMatchHandler(creator)
+	handler := newTestHandler(creator)
 
 	req := newCreateMatchRequest("11111111-1111-1111-1111-111111111111", createMatchRequest{
 		TargetUserID: "11111111-1111-1111-1111-111111111111",
@@ -187,7 +235,7 @@ func TestCreateMatch_SelfSwipe(t *testing.T) {
 }
 
 func TestCreateMatch_Unauthorized(t *testing.T) {
-	handler := NewMatchHandler(&mockMatchCreator{})
+	handler := newTestHandler(&mockMatchCreator{})
 
 	req := newCreateMatchRequest("", createMatchRequest{
 		TargetUserID: "22222222-2222-2222-2222-222222222222",
@@ -205,7 +253,7 @@ func TestCreateMatch_DBError(t *testing.T) {
 	creator := &mockMatchCreator{
 		err: errors.New("connection lost"),
 	}
-	handler := NewMatchHandler(creator)
+	handler := newTestHandler(creator)
 
 	req := newCreateMatchRequest("11111111-1111-1111-1111-111111111111", createMatchRequest{
 		TargetUserID: "22222222-2222-2222-2222-222222222222",
@@ -226,7 +274,7 @@ func TestCreateMatch_PassesCorrectArgs(t *testing.T) {
 			SwipeRecorded: true,
 		},
 	}
-	handler := NewMatchHandler(creator)
+	handler := newTestHandler(creator)
 
 	callerID := "11111111-1111-1111-1111-111111111111"
 	targetID := "22222222-2222-2222-2222-222222222222"
@@ -244,6 +292,168 @@ func TestCreateMatch_PassesCorrectArgs(t *testing.T) {
 	}
 	if creator.targetID != targetID {
 		t.Fatalf("expected targetID %q, got %q", targetID, creator.targetID)
+	}
+}
+
+func TestCreateMatch_MutualMatch_SendsPush(t *testing.T) {
+	matchID := "match-uuid-456"
+	callerID := "11111111-1111-1111-1111-111111111111"
+	targetID := "22222222-2222-2222-2222-222222222222"
+	status := "PENDING"
+
+	creator := &mockMatchCreator{
+		result: &matches.CreateMatchResult{
+			Matched:   true,
+			MatchID:   &matchID,
+			User1ID:   strPtr(callerID),
+			User2ID:   strPtr(targetID),
+			Status:    &status,
+			CreatedAt: timePtr(time.Now()),
+		},
+	}
+	notifier := newMockNotifier()
+	names := &mockDisplayNameLookup{name: "Carlos"}
+	handler := NewMatchHandler(creator, notifier, names)
+
+	req := newCreateMatchRequest(callerID, createMatchRequest{
+		TargetUserID: targetID,
+	})
+	rec := httptest.NewRecorder()
+	handler.CreateMatch(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d", rec.Code)
+	}
+
+	// Wait for async push goroutine
+	select {
+	case <-notifier.notifyCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("push notification was not sent within timeout")
+	}
+
+	notifier.mu.Lock()
+	defer notifier.mu.Unlock()
+	if !notifier.called {
+		t.Fatal("expected notifier to be called")
+	}
+	if notifier.recipientID != targetID {
+		t.Fatalf("expected recipient %q, got %q", targetID, notifier.recipientID)
+	}
+	if notifier.matchID != matchID {
+		t.Fatalf("expected matchID %q, got %q", matchID, notifier.matchID)
+	}
+	if notifier.displayName != "Carlos" {
+		t.Fatalf("expected displayName %q, got %q", "Carlos", notifier.displayName)
+	}
+}
+
+func TestCreateMatch_SwipeOnly_NoPush(t *testing.T) {
+	creator := &mockMatchCreator{
+		result: &matches.CreateMatchResult{
+			Matched:       false,
+			SwipeRecorded: true,
+		},
+	}
+	notifier := newMockNotifier()
+	handler := NewMatchHandler(creator, notifier, &mockDisplayNameLookup{})
+
+	req := newCreateMatchRequest("11111111-1111-1111-1111-111111111111", createMatchRequest{
+		TargetUserID: "22222222-2222-2222-2222-222222222222",
+	})
+	rec := httptest.NewRecorder()
+	handler.CreateMatch(rec, req)
+
+	// Give goroutine a chance to run (it shouldn't)
+	time.Sleep(50 * time.Millisecond)
+
+	notifier.mu.Lock()
+	defer notifier.mu.Unlock()
+	if notifier.called {
+		t.Fatal("notifier should not be called for non-mutual swipe")
+	}
+}
+
+func TestCreateMatch_PushFailure_StillReturns201(t *testing.T) {
+	matchID := "match-uuid-789"
+	status := "PENDING"
+	callerID := "11111111-1111-1111-1111-111111111111"
+	targetID := "22222222-2222-2222-2222-222222222222"
+
+	creator := &mockMatchCreator{
+		result: &matches.CreateMatchResult{
+			Matched:   true,
+			MatchID:   &matchID,
+			User1ID:   strPtr(callerID),
+			User2ID:   strPtr(targetID),
+			Status:    &status,
+			CreatedAt: timePtr(time.Now()),
+		},
+	}
+	notifier := newMockNotifier()
+	notifier.err = errors.New("onesignal returned 500")
+	handler := NewMatchHandler(creator, notifier, &mockDisplayNameLookup{})
+
+	req := newCreateMatchRequest(callerID, createMatchRequest{
+		TargetUserID: targetID,
+	})
+	rec := httptest.NewRecorder()
+	handler.CreateMatch(rec, req)
+
+	// Response should still be 201 regardless of push failure
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d", rec.Code)
+	}
+
+	// Wait for async push goroutine
+	select {
+	case <-notifier.notifyCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("push notification was not attempted within timeout")
+	}
+
+	notifier.mu.Lock()
+	defer notifier.mu.Unlock()
+	if !notifier.called {
+		t.Fatal("expected notifier to be called even though it returns error")
+	}
+}
+
+func TestRecipientFromMatch(t *testing.T) {
+	tests := []struct {
+		name     string
+		callerID string
+		user1    string
+		user2    string
+		want     string
+	}{
+		{
+			name:     "caller is user1, recipient is user2",
+			callerID: "aaa",
+			user1:    "aaa",
+			user2:    "bbb",
+			want:     "bbb",
+		},
+		{
+			name:     "caller is user2, recipient is user1",
+			callerID: "bbb",
+			user1:    "aaa",
+			user2:    "bbb",
+			want:     "aaa",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := &matches.CreateMatchResult{
+				User1ID: strPtr(tt.user1),
+				User2ID: strPtr(tt.user2),
+			}
+			got := recipientFromMatch(tt.callerID, result)
+			if got != tt.want {
+				t.Fatalf("expected %q, got %q", tt.want, got)
+			}
+		})
 	}
 }
 

@@ -10,6 +10,7 @@ import (
 	"github.com/wc2026-stickers/sticker-swap-app/go_service/internal/matches"
 	"github.com/wc2026-stickers/sticker-swap-app/go_service/internal/matchmaking"
 	"github.com/wc2026-stickers/sticker-swap-app/go_service/internal/middleware"
+	"github.com/wc2026-stickers/sticker-swap-app/go_service/internal/onesignal"
 	"github.com/wc2026-stickers/sticker-swap-app/go_service/internal/ws"
 )
 
@@ -25,6 +26,8 @@ type RouterConfig struct {
 	MatchCache           *matchmaking.Cache
 	WSHandler            *ws.Handler
 	MatchCreator         matches.MatchCreator
+	PushNotifier         onesignal.Notifier
+	DisplayNames         DisplayNameLookup
 }
 
 // NewRouter constructs a Chi router with all routes and middleware.
@@ -63,7 +66,7 @@ func NewRouter(cfg RouterConfig) chi.Router {
 		).Get("/matches", matchHandler.ListMatches)
 
 		// Match creation — record swipe, create match if mutual
-		matchCreateHandler := NewMatchHandler(cfg.MatchCreator)
+		matchCreateHandler := NewMatchHandler(cfg.MatchCreator, cfg.PushNotifier, cfg.DisplayNames)
 		r.With(
 			middleware.RateLimit(120, 60),
 			middleware.VerifyAttestation(cfg.AttestationVerifier, cfg.AttestationDisabled),

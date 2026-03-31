@@ -20,10 +20,11 @@ func NewMatchmakingHandler(scorer matchmaking.Scorer, cache *matchmaking.Cache) 
 	return &MatchmakingHandler{scorer: scorer, cache: cache}
 }
 
-// ListMatches handles GET /api/v1/matches?lat=X&lng=Y&radius=Z
+// ListMatches handles GET /api/v1/matches?lat=X&lng=Y&radius=Z&offset=N&limit=N
 //
 // Returns a JSON array of scored matches sorted by total_score descending.
-// Results are cached per-user for 60 seconds.
+// Results are cached per-user for 60 seconds. Supports offset/limit pagination
+// with X-Total-Count response header.
 func (h *MatchmakingHandler) ListMatches(w http.ResponseWriter, r *http.Request) {
 	userID, ok := r.Context().Value(ably.UserIDKey()).(string)
 	if !ok || userID == "" {
@@ -60,27 +61,67 @@ func (h *MatchmakingHandler) ListMatches(w http.ResponseWriter, r *http.Request)
 		radiusM = parsed
 	}
 
-	// Check cache
+	offset := 0
+	if offsetStr := r.URL.Query().Get("offset"); offsetStr != "" {
+		parsed, err := strconv.Atoi(offsetStr)
+		if err != nil || parsed < 0 {
+			writeMatchError(w, http.StatusBadRequest, "INVALID_PARAMS", "offset must be a non-negative integer")
+			return
+		}
+		offset = parsed
+	}
+
+	limit := 10
+	if limitStr := r.URL.Query().Get("limit"); limitStr != "" {
+		parsed, err := strconv.Atoi(limitStr)
+		if err != nil || parsed < 1 || parsed > 50 {
+			writeMatchError(w, http.StatusBadRequest, "INVALID_PARAMS", "limit must be between 1 and 50")
+			return
+		}
+		limit = parsed
+	}
+
+	// Get full result set (cached or freshly scored).
+	var allResults []matchmaking.ScoredMatch
+	var cacheHit bool
+
 	if cached, hit := h.cache.Get(userID); hit {
-		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("X-Cache", "HIT")
-		json.NewEncoder(w).Encode(cached)
-		return
+		allResults = cached
+		cacheHit = true
+	} else {
+		results, err := h.scorer.ScoreMatches(r.Context(), userID, lat, lng, radiusM)
+		if err != nil {
+			writeMatchError(w, http.StatusInternalServerError, "MATCHMAKING_ERROR", "Failed to compute matches")
+			return
+		}
+		h.cache.Set(userID, results)
+		allResults = results
 	}
 
-	// Compute scores
-	results, err := h.scorer.ScoreMatches(r.Context(), userID, lat, lng, radiusM)
-	if err != nil {
-		writeMatchError(w, http.StatusInternalServerError, "MATCHMAKING_ERROR", "Failed to compute matches")
-		return
-	}
-
-	// Cache and respond
-	h.cache.Set(userID, results)
+	// Apply offset/limit pagination.
+	totalCount := len(allResults)
+	page := paginateResults(allResults, offset, limit)
 
 	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Cache", "MISS")
-	json.NewEncoder(w).Encode(results)
+	w.Header().Set("X-Total-Count", strconv.Itoa(totalCount))
+	if cacheHit {
+		w.Header().Set("X-Cache", "HIT")
+	} else {
+		w.Header().Set("X-Cache", "MISS")
+	}
+	json.NewEncoder(w).Encode(page)
+}
+
+// paginateResults returns a slice of results for the given offset and limit.
+func paginateResults(results []matchmaking.ScoredMatch, offset, limit int) []matchmaking.ScoredMatch {
+	if offset >= len(results) {
+		return []matchmaking.ScoredMatch{}
+	}
+	end := offset + limit
+	if end > len(results) {
+		end = len(results)
+	}
+	return results[offset:end]
 }
 
 // writeMatchError writes a JSON error response.

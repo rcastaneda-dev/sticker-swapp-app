@@ -25,7 +25,9 @@ sticker-swapp-app/
 │   ├── lib/
 │   │   ├── main.dart
 │   │   ├── app.dart
-│   │   ├── core/          # App-wide: router, services
+│   │   ├── core/          # App-wide: router, services, providers
+│   │   │   ├── providers/
+│   │   │   │   └── push_notification_providers.dart  # OneSignal lifecycle + user association
 │   │   │   └── services/
 │   │   │       ├── attestation_service.dart          # Play Integrity / App Attest tokens
 │   │   │       ├── attested_http_client.dart         # http.BaseClient with attestation headers
@@ -90,6 +92,7 @@ sticker-swapp-app/
 │       ├── auth/          # (reserved)
 │       ├── matches/       # Swipe & match creation (MatchCreator interface)
 │       ├── matchmaking/   # Scoring engine, in-memory cache
+│       ├── onesignal/     # Push notification sending (OneSignal REST API)
 │       ├── ws/            # WebSocket connection manager (goroutine-per-connection)
 │       └── trades/        # (reserved)
 ├── supabase/              # Migrations & Edge Functions
@@ -273,6 +276,55 @@ JWT expiry: 15 min (900s in config.toml) with refresh token rotation (10s reuse 
 - `flutter_app/lib/features/matching/presentation/widgets/match_celebration_overlay.dart` — Mutual match overlay
 - `flutter_app/lib/features/matching/presentation/screens/matches_screen.dart` — Screen integrating all above
 
+## Push Notifications
+
+**Method:** OneSignal + FCM (Android) / APNs (iOS). Server-side push via OneSignal REST API when a mutual match is created. Under-13 users are excluded at multiple layers.
+
+**Flow:**
+```
+User B swipes right → POST /api/v1/matches → mutual match (201)
+  Go handler:
+    1. Return 201 Created to User B (in-app celebration overlay)
+    2. Async goroutine: look up User B's display name → send OneSignal push to User A
+  User A (backgrounded):
+    1. Receives OS push: "Carlos wants to trade with you!"
+    2. Taps notification → Flutter click handler → GoRouter.push('/matches/{matchId}')
+  User A (foregrounded):
+    1. Foreground handler suppresses OS notification
+    2. Adds match to matchNotificationProvider → badge + toast
+```
+
+**Notification payload:** `{headings: "New Match!", contents: "{name} wants to trade!", data: {match_id, type: "match_created"}}`
+
+**OneSignal user association lifecycle:** Managed by `pushNotificationLifecycleProvider` in `app.dart`. Watches `authStateProvider` + `isUnder13Provider`:
+- Authenticated + 13+ → `OneSignal.login(userId)` (associates device with external_id)
+- Unauthenticated or under-13 → `OneSignal.logout()` (disassociates device)
+
+**Under-13 enforcement (triple-layered):**
+1. Flutter: `pushNotificationLifecycleProvider` never calls `OneSignal.login()` for under-13 → no external_id → cannot be targeted by push
+2. Go middleware: `RequireAge13Plus()` blocks under-13 from `POST /api/v1/matches` → push-sending code unreachable
+3. Both swipe participants passed the age gate to swipe, so notification recipients are always 13+
+
+**Cold-start deep-link:** If a notification tap fires before the lifecycle provider is wired, the match ID is buffered in `_pendingMatchId` and processed when `processPendingNotification()` is called.
+
+**Foreground suppression:** When the app is in the foreground, match notifications are suppressed at the OS level and routed through the in-app `matchNotificationProvider` (badge + toast) instead.
+
+**Environment variables (Go):**
+- `ONESIGNAL_APP_ID` — OneSignal App ID (same as Flutter dart-define)
+- `ONESIGNAL_REST_API_KEY` — OneSignal REST API Key (server-only, never in client)
+- If either is missing, `NoopNotifier` is used (push silently disabled)
+
+**Providers:**
+- `pushNotificationServiceProvider` — `Provider<PushNotificationService>` singleton (overridden in main() with initialized instance)
+- `pushNotificationLifecycleProvider` — `Provider<void>` — manages OneSignal login/logout + notification tap/foreground handlers
+
+**Key files:**
+- `flutter_app/lib/core/services/push_notification_service.dart` — Service with injectable callbacks, click/foreground handlers, pending buffer
+- `flutter_app/lib/core/providers/push_notification_providers.dart` — Riverpod lifecycle + service providers
+- `go_service/internal/onesignal/notifier.go` — `Notifier` interface, `PushNotifier` (HTTP), `NoopNotifier` (dev)
+- `go_service/internal/api/matches.go` — `MatchHandler` with async push on mutual match
+- `go_service/internal/api/display_name.go` — `DisplayNameLookup` interface + DB implementation
+
 ## Guest Mode & Migration
 
 **Guest mode:** Users can track stickers locally without an account. Inventory is stored in encrypted local storage on-device (no server PII). Guest users cannot access discovery, trading, or chat features.
@@ -443,6 +495,7 @@ GOOGLE_CLOUD_PROJECT_NUMBER               # Play Integrity token verification (G
 APPLE_APP_ID                              # App Attest verification, format: TEAMID.BUNDLEID (Go .env)
 ATTESTATION_DISABLED                      # Set to "true" to bypass attestation in dev (Go .env)
 GO_SERVICE_URL                            # Go matchmaking backend URL (--dart-define, e.g. http://localhost:8080)
+ONESIGNAL_REST_API_KEY                    # OneSignal REST API Key for server-side push (Go .env, never in client)
 ```
 
 Deployment secrets (GitHub Actions): `APPSTORE_CONNECT_*`, `PLAY_SERVICE_ACCOUNT_JSON`, `ANDROID_KEYSTORE*`, `IOS_CERTIFICATE*`, `PROVISIONING_PROFILE`, `GOOGLE_WEB_CLIENT_ID`, `GOOGLE_IOS_CLIENT_ID`.

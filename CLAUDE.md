@@ -92,12 +92,12 @@ sticker-swapp-app/
 │   ├── cmd/server/        # Entry point (main.go)
 │   └── internal/
 │       ├── api/           # HTTP handlers & routes
-│       ├── ably/          # Token generation (HMAC-signed)
+│       ├── ably/          # Token generation (HMAC-signed) + REST SDK publisher
 │       ├── attestation/   # Play Integrity + App Attest verification
 │       ├── middleware/    # Auth, age gating, rate limiting, attestation, device integrity, trade limiting
 │       ├── db/            # pgx connection pool
 │       ├── auth/          # (reserved)
-│       ├── matches/       # Swipe & match creation (MatchCreator interface)
+│       ├── matches/       # Swipe & match creation (MatchCreator, ParticipantChecker interfaces)
 │       ├── matchmaking/   # Scoring engine, in-memory cache
 │       ├── onesignal/     # Push notification sending (OneSignal REST API)
 │       ├── ws/            # WebSocket connection manager (goroutine-per-connection)
@@ -417,6 +417,30 @@ Flutter (post-signup) → migrate-guest-inventory Edge Function → migrate_gues
 |-------------------------------------|--------------------------|---------------------|
 | `match:{matchId}`                   | publish, subscribe, presence, history | Trade chat |
 | `user:{userId}:notifications`       | subscribe only           | Server-pushed alerts |
+
+## Ably SDK Integration (Go Service)
+
+**SDK:** `github.com/ably/ably-go v1.3.0` — REST client for server-side channel publish. Import aliased as `ablySDK` to avoid collision with `internal/ably` package.
+
+**Publisher** (`internal/ably/publisher.go`): `Publisher` interface with `RESTPublisher` (Ably REST SDK) and `NoopPublisher` (dev/test). On mutual match creation, the Go service publishes a `match.created` system event to the `match:{matchId}` Ably channel. This establishes the channel and the first persisted message.
+
+**Match participant validation** (`internal/matches/participant.go`): `ParticipantChecker` interface with `DBParticipantChecker`. When `POST /api/v1/ably/auth` includes a `matchId`, the token handler verifies the requesting user is `user1_id` or `user2_id` in the match before issuing a scoped token. Returns 403 `NOT_PARTICIPANT` if not in the match, 400 `INVALID_PARAMS` if matchId is not a valid UUID.
+
+**Token scoping:** Each token is scoped to the specific match channel (`publish`, `subscribe`, `presence`, `history`) plus the user's personal notification channel (`subscribe` only). 1-hour TTL.
+
+**Channel creation flow:**
+```
+POST /api/v1/matches → mutual match (201) → async goroutine:
+  1. PublishMatchCreated(ctx, matchId, event) → Ably REST API → match:{matchId} channel created
+  2. sendMatchPush(callerID, result) → OneSignal push to other user
+```
+
+**24h message history:** Configured via Ably Dashboard channel rule on `match:*` namespace with "Persist all messages" enabled. No code change needed — the Flutter Ably SDK retrieves history via `channel.history()`.
+
+**Key files:**
+- `go_service/internal/ably/publisher.go` — Publisher interface, RESTPublisher, NoopPublisher, MatchCreatedEvent
+- `go_service/internal/ably/token_handler.go` — Token issuance with match participant validation
+- `go_service/internal/matches/participant.go` — ParticipantChecker interface, DBParticipantChecker
 
 ## API Endpoints (Go Service)
 

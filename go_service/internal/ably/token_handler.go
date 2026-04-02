@@ -8,9 +8,13 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
+
+	"github.com/wc2026-stickers/sticker-swap-app/go_service/internal/matches"
 )
 
 // Config holds Ably and Supabase credentials.
@@ -49,19 +53,25 @@ func parseAPIKey(apiKey string) (parsedKey, error) {
 	}, nil
 }
 
+// uuidRegex validates UUID format for matchId validation.
+var uuidRegex = regexp.MustCompile(
+	`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`,
+)
+
 // TokenHandler issues scoped Ably tokens for authenticated users.
 type TokenHandler struct {
-	config Config
-	key    parsedKey
+	config      Config
+	key         parsedKey
+	participant matches.ParticipantChecker
 }
 
-// NewTokenHandler creates a handler with validated config.
-func NewTokenHandler(cfg Config) *TokenHandler {
+// NewTokenHandler creates a handler with validated config and match participant checker.
+func NewTokenHandler(cfg Config, participant matches.ParticipantChecker) *TokenHandler {
 	key, err := parseAPIKey(cfg.APIKey)
 	if err != nil {
 		panic(fmt.Sprintf("Invalid ABLY_API_KEY: %v", err))
 	}
-	return &TokenHandler{config: cfg, key: key}
+	return &TokenHandler{config: cfg, key: key, participant: participant}
 }
 
 // TokenRequest is the Ably-compatible signed token request structure.
@@ -110,6 +120,29 @@ func (h *TokenHandler) IssueToken(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.Body != nil {
 		json.NewDecoder(r.Body).Decode(&req) // non-fatal if empty
+	}
+
+	// If a match-scoped token is requested, validate participation.
+	if req.MatchID != "" {
+		if !uuidRegex.MatchString(req.MatchID) {
+			writeError(w, http.StatusBadRequest, "INVALID_PARAMS", "matchId must be a valid UUID")
+			return
+		}
+
+		isParticipant, err := h.participant.IsParticipant(r.Context(), userID, req.MatchID)
+		if err != nil {
+			slog.Error("Failed to verify match participation",
+				"error", err,
+				"user_id", userID,
+				"match_id", req.MatchID,
+			)
+			writeError(w, http.StatusInternalServerError, "VALIDATION_ERROR", "Failed to verify match access")
+			return
+		}
+		if !isParticipant {
+			writeError(w, http.StatusForbidden, "NOT_PARTICIPANT", "You are not a participant in this match")
+			return
+		}
 	}
 
 	// Build capability — scoped to the user's match channels only.

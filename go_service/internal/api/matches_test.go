@@ -20,6 +20,7 @@ import (
 var _ matches.MatchCreator = (*mockMatchCreator)(nil)
 var _ onesignal.Notifier = (*mockNotifier)(nil)
 var _ DisplayNameLookup = (*mockDisplayNameLookup)(nil)
+var _ ably.Publisher = (*mockPublisher)(nil)
 
 type mockMatchCreator struct {
 	result   *matches.CreateMatchResult
@@ -76,8 +77,35 @@ func (m *mockDisplayNameLookup) LookupDisplayName(_ context.Context, _ string) s
 	return m.name
 }
 
+type mockPublisher struct {
+	mu        sync.Mutex
+	called    bool
+	matchID   string
+	event     ably.MatchCreatedEvent
+	err       error
+	publishCh chan struct{}
+}
+
+func newMockPublisher() *mockPublisher {
+	return &mockPublisher{publishCh: make(chan struct{})}
+}
+
+func (m *mockPublisher) PublishMatchCreated(_ context.Context, matchID string, event ably.MatchCreatedEvent) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.called = true
+	m.matchID = matchID
+	m.event = event
+	select {
+	case <-m.publishCh:
+	default:
+		close(m.publishCh)
+	}
+	return m.err
+}
+
 func newTestHandler(creator matches.MatchCreator) *MatchHandler {
-	return NewMatchHandler(creator, newMockNotifier(), &mockDisplayNameLookup{})
+	return NewMatchHandler(creator, newMockNotifier(), &mockDisplayNameLookup{}, newMockPublisher())
 }
 
 func newCreateMatchRequest(userID string, body interface{}) *http.Request {
@@ -313,7 +341,7 @@ func TestCreateMatch_MutualMatch_SendsPush(t *testing.T) {
 	}
 	notifier := newMockNotifier()
 	names := &mockDisplayNameLookup{name: "Carlos"}
-	handler := NewMatchHandler(creator, notifier, names)
+	handler := NewMatchHandler(creator, notifier, names, newMockPublisher())
 
 	req := newCreateMatchRequest(callerID, createMatchRequest{
 		TargetUserID: targetID,
@@ -356,7 +384,7 @@ func TestCreateMatch_SwipeOnly_NoPush(t *testing.T) {
 		},
 	}
 	notifier := newMockNotifier()
-	handler := NewMatchHandler(creator, notifier, &mockDisplayNameLookup{})
+	handler := NewMatchHandler(creator, notifier, &mockDisplayNameLookup{}, newMockPublisher())
 
 	req := newCreateMatchRequest("11111111-1111-1111-1111-111111111111", createMatchRequest{
 		TargetUserID: "22222222-2222-2222-2222-222222222222",
@@ -392,7 +420,7 @@ func TestCreateMatch_PushFailure_StillReturns201(t *testing.T) {
 	}
 	notifier := newMockNotifier()
 	notifier.err = errors.New("onesignal returned 500")
-	handler := NewMatchHandler(creator, notifier, &mockDisplayNameLookup{})
+	handler := NewMatchHandler(creator, notifier, &mockDisplayNameLookup{}, newMockPublisher())
 
 	req := newCreateMatchRequest(callerID, createMatchRequest{
 		TargetUserID: targetID,
@@ -454,6 +482,132 @@ func TestRecipientFromMatch(t *testing.T) {
 				t.Fatalf("expected %q, got %q", tt.want, got)
 			}
 		})
+	}
+}
+
+func TestCreateMatch_MutualMatch_PublishesAblyEvent(t *testing.T) {
+	matchID := "match-uuid-pub"
+	callerID := "11111111-1111-1111-1111-111111111111"
+	targetID := "22222222-2222-2222-2222-222222222222"
+	status := "PENDING"
+
+	creator := &mockMatchCreator{
+		result: &matches.CreateMatchResult{
+			Matched:   true,
+			MatchID:   &matchID,
+			User1ID:   strPtr(callerID),
+			User2ID:   strPtr(targetID),
+			Status:    &status,
+			CreatedAt: timePtr(time.Now()),
+		},
+	}
+	publisher := newMockPublisher()
+	handler := NewMatchHandler(creator, newMockNotifier(), &mockDisplayNameLookup{}, publisher)
+
+	req := newCreateMatchRequest(callerID, createMatchRequest{
+		TargetUserID: targetID,
+	})
+	rec := httptest.NewRecorder()
+	handler.CreateMatch(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d", rec.Code)
+	}
+
+	// Wait for async publish goroutine
+	select {
+	case <-publisher.publishCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("ably publish was not called within timeout")
+	}
+
+	publisher.mu.Lock()
+	defer publisher.mu.Unlock()
+	if !publisher.called {
+		t.Fatal("expected publisher to be called")
+	}
+	if publisher.matchID != matchID {
+		t.Fatalf("expected matchID %q, got %q", matchID, publisher.matchID)
+	}
+	if publisher.event.User1ID != callerID {
+		t.Fatalf("expected user1_id %q, got %q", callerID, publisher.event.User1ID)
+	}
+	if publisher.event.User2ID != targetID {
+		t.Fatalf("expected user2_id %q, got %q", targetID, publisher.event.User2ID)
+	}
+	if publisher.event.Status != "PENDING" {
+		t.Fatalf("expected status %q, got %q", "PENDING", publisher.event.Status)
+	}
+}
+
+func TestCreateMatch_SwipeOnly_NoAblyPublish(t *testing.T) {
+	creator := &mockMatchCreator{
+		result: &matches.CreateMatchResult{
+			Matched:       false,
+			SwipeRecorded: true,
+		},
+	}
+	publisher := newMockPublisher()
+	handler := NewMatchHandler(creator, newMockNotifier(), &mockDisplayNameLookup{}, publisher)
+
+	req := newCreateMatchRequest("11111111-1111-1111-1111-111111111111", createMatchRequest{
+		TargetUserID: "22222222-2222-2222-2222-222222222222",
+	})
+	rec := httptest.NewRecorder()
+	handler.CreateMatch(rec, req)
+
+	// Give goroutine a chance to run (it shouldn't)
+	time.Sleep(50 * time.Millisecond)
+
+	publisher.mu.Lock()
+	defer publisher.mu.Unlock()
+	if publisher.called {
+		t.Fatal("publisher should not be called for non-mutual swipe")
+	}
+}
+
+func TestCreateMatch_AblyPublishFailure_StillReturns201(t *testing.T) {
+	matchID := "match-uuid-fail"
+	status := "PENDING"
+	callerID := "11111111-1111-1111-1111-111111111111"
+	targetID := "22222222-2222-2222-2222-222222222222"
+
+	creator := &mockMatchCreator{
+		result: &matches.CreateMatchResult{
+			Matched:   true,
+			MatchID:   &matchID,
+			User1ID:   strPtr(callerID),
+			User2ID:   strPtr(targetID),
+			Status:    &status,
+			CreatedAt: timePtr(time.Now()),
+		},
+	}
+	publisher := newMockPublisher()
+	publisher.err = errors.New("ably returned 500")
+	handler := NewMatchHandler(creator, newMockNotifier(), &mockDisplayNameLookup{}, publisher)
+
+	req := newCreateMatchRequest(callerID, createMatchRequest{
+		TargetUserID: targetID,
+	})
+	rec := httptest.NewRecorder()
+	handler.CreateMatch(rec, req)
+
+	// Response should still be 201 regardless of publish failure
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d", rec.Code)
+	}
+
+	// Wait for async publish goroutine
+	select {
+	case <-publisher.publishCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("ably publish was not attempted within timeout")
+	}
+
+	publisher.mu.Lock()
+	defer publisher.mu.Unlock()
+	if !publisher.called {
+		t.Fatal("expected publisher to be called even though it returns error")
 	}
 }
 

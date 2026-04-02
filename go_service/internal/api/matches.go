@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"regexp"
+	"time"
 
 	"github.com/wc2026-stickers/sticker-swap-app/go_service/internal/ably"
 	"github.com/wc2026-stickers/sticker-swap-app/go_service/internal/matches"
@@ -19,14 +20,15 @@ var uuidRegex = regexp.MustCompile(
 
 // MatchHandler serves the match creation endpoint.
 type MatchHandler struct {
-	creator  matches.MatchCreator
-	notifier onesignal.Notifier
-	names    DisplayNameLookup
+	creator   matches.MatchCreator
+	notifier  onesignal.Notifier
+	names     DisplayNameLookup
+	publisher ably.Publisher
 }
 
-// NewMatchHandler creates a handler with the given MatchCreator, push notifier, and name lookup.
-func NewMatchHandler(creator matches.MatchCreator, notifier onesignal.Notifier, names DisplayNameLookup) *MatchHandler {
-	return &MatchHandler{creator: creator, notifier: notifier, names: names}
+// NewMatchHandler creates a handler with the given MatchCreator, push notifier, name lookup, and Ably publisher.
+func NewMatchHandler(creator matches.MatchCreator, notifier onesignal.Notifier, names DisplayNameLookup, publisher ably.Publisher) *MatchHandler {
+	return &MatchHandler{creator: creator, notifier: notifier, names: names, publisher: publisher}
 }
 
 // createMatchRequest is the expected JSON body for POST /api/v1/matches.
@@ -75,8 +77,9 @@ func (h *MatchHandler) CreateMatch(w http.ResponseWriter, r *http.Request) {
 	if result.Matched {
 		w.WriteHeader(http.StatusCreated)
 
-		// Send push notification to the other user asynchronously.
+		// Send push notification and publish Ably channel event asynchronously.
 		go h.sendMatchPush(userID, result)
+		go h.publishMatchChannel(result)
 	}
 	json.NewEncoder(w).Encode(result)
 }
@@ -95,6 +98,38 @@ func (h *MatchHandler) sendMatchPush(callerID string, result *matches.CreateMatc
 			"error", err,
 			"match_id", *result.MatchID,
 			"recipient", recipientID,
+		)
+	}
+}
+
+// publishMatchChannel publishes a system event to the match Ably channel.
+// This establishes the channel and the first persisted message for 24h history.
+func (h *MatchHandler) publishMatchChannel(result *matches.CreateMatchResult) {
+	if result.MatchID == nil {
+		return
+	}
+
+	event := ably.MatchCreatedEvent{
+		MatchID: *result.MatchID,
+	}
+	if result.User1ID != nil {
+		event.User1ID = *result.User1ID
+	}
+	if result.User2ID != nil {
+		event.User2ID = *result.User2ID
+	}
+	if result.Status != nil {
+		event.Status = *result.Status
+	}
+	if result.CreatedAt != nil {
+		event.CreatedAt = result.CreatedAt.Format(time.RFC3339)
+	}
+
+	ctx := context.Background()
+	if err := h.publisher.PublishMatchCreated(ctx, *result.MatchID, event); err != nil {
+		slog.Warn("Failed to publish match.created event",
+			"error", err,
+			"match_id", *result.MatchID,
 		)
 	}
 }

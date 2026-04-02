@@ -47,7 +47,8 @@ func main() {
 	log.Println("Database pool connected")
 
 	// Build handler dependencies
-	tokenHandler := ably.NewTokenHandler(ablyCfg)
+	participantChecker := matches.NewParticipantChecker(pool)
+	tokenHandler := ably.NewTokenHandler(ablyCfg, participantChecker)
 
 	// Attestation verifier — optional env vars for dev flexibility
 	googleProjectNumber := os.Getenv("GOOGLE_CLOUD_PROJECT_NUMBER")
@@ -81,6 +82,17 @@ func main() {
 		log.Println("OneSignal push notifications DISABLED (missing credentials)")
 	}
 
+	// Initialize Ably REST publisher for server-side channel events
+	var ablyPublisher ably.Publisher
+	ablyPub, err := ably.NewRESTPublisher(ablyCfg.APIKey)
+	if err != nil {
+		log.Printf("WARNING: Ably REST publisher init failed: %v (using noop)", err)
+		ablyPublisher = &ably.NoopPublisher{}
+	} else {
+		ablyPublisher = ablyPub
+		log.Println("Ably REST publisher enabled")
+	}
+
 	// Initialize WebSocket connection manager
 	wsCfg := ws.DefaultConfig()
 	wsManager := ws.NewManager(wsCfg)
@@ -99,6 +111,7 @@ func main() {
 		MatchCreator:        matchCreator,
 		PushNotifier:        pushNotifier,
 		DisplayNames:        &api.DBDisplayNameLookup{Pool: pool},
+		AblyPublisher:       ablyPublisher,
 	})
 
 	// Start HTTP server

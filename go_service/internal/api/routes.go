@@ -28,6 +28,7 @@ type RouterConfig struct {
 	MatchCreator         matches.MatchCreator
 	PushNotifier         onesignal.Notifier
 	DisplayNames         DisplayNameLookup
+	AblyPublisher        ably.Publisher
 }
 
 // NewRouter constructs a Chi router with all routes and middleware.
@@ -66,7 +67,7 @@ func NewRouter(cfg RouterConfig) chi.Router {
 		).Get("/matches", matchHandler.ListMatches)
 
 		// Match creation — record swipe, create match if mutual
-		matchCreateHandler := NewMatchHandler(cfg.MatchCreator, cfg.PushNotifier, cfg.DisplayNames)
+		matchCreateHandler := NewMatchHandler(cfg.MatchCreator, cfg.PushNotifier, cfg.DisplayNames, cfg.AblyPublisher)
 		r.With(
 			middleware.RateLimit(120, 60),
 			middleware.VerifyAttestation(cfg.AttestationVerifier, cfg.AttestationDisabled),

@@ -13,9 +13,6 @@ CREATE TABLE wishlist_shares (
   created_at    timestamptz  NOT NULL DEFAULT now()
 );
 
-CREATE INDEX idx_wishlist_shares_token ON wishlist_shares (token)
-  WHERE expires_at > now();
-
 CREATE INDEX idx_wishlist_shares_user ON wishlist_shares (user_id);
 
 ALTER TABLE wishlist_shares ENABLE ROW LEVEL SECURITY;

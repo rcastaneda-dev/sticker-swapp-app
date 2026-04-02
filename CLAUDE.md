@@ -51,9 +51,13 @@ sticker-swapp-app/
 │   │   │   │   │   ├── models/sticker.dart
 │   │   │   │   │   ├── services/sticker_service.dart
 │   │   │   │   │   ├── services/guest_storage_service.dart
+│   │   │   │   │   ├── services/user_inventory_service.dart
 │   │   │   │   │   ├── providers/sticker_providers.dart
 │   │   │   │   │   ├── providers/guest_inventory_providers.dart
-│   │   │   │   │   └── providers/collection_progress_providers.dart
+│   │   │   │   │   ├── providers/user_inventory_providers.dart
+│   │   │   │   │   ├── providers/effective_inventory_providers.dart
+│   │   │   │   │   ├── providers/collection_progress_providers.dart
+│   │   │   │   │   └── providers/wishlist_providers.dart
 │   │   │   │   ├── presentation/screens/sticker_catalog_screen.dart
 │   │   │   │   ├── presentation/screens/collection_progress_screen.dart
 │   │   │   │   └── stickers.dart          # Barrel export
@@ -64,9 +68,12 @@ sticker-swapp-app/
 │   │   │       ├── data/
 │   │   │       │   └── providers/
 │   │   │       │       └── location_providers.dart  # Location permission & update state
-│   │   │       └── presentation/screens/
-│   │   │           ├── matches_screen.dart     # Main hub (under-13 guard)
-│   │   │           └── match_screen.dart       # Trade match (under-13 guard)
+│   │   │       └── presentation/
+│   │   │           ├── screens/
+│   │   │           │   ├── matches_screen.dart     # Main hub (under-13 → wishlist)
+│   │   │           │   └── match_screen.dart       # Trade match (under-13 guard)
+│   │   │           └── widgets/
+│   │   │               └── under13_wishlist_view.dart  # Wishlist for under-13 users
 │   │   └── shared/        # Cross-cutting widgets & utils
 │   │       ├── theme/
 │   │       │   ├── swapp_colors.dart      # Light & dark ColorScheme
@@ -205,7 +212,59 @@ JWT expiry: 15 min (900s in config.toml) with refresh token rotation (10s reuse 
 - `teamProgressProvider` — Provider<List<TeamProgress>> grouping stickers by team with owned/total counts, sorted by completion %
 - `overallProgressProvider` — Provider<({int owned, int total})> for total collection stats
 
-**Real-time updates:** All widgets watch `guestInventoryProvider` through derived providers — toggling a sticker in the catalog immediately updates progress bars and counts on the progress screen.
+**Real-time updates:** All widgets watch `effectiveInventoryProvider` (which delegates to `guestInventoryProvider` for guests or `userInventoryProvider` for authenticated users) — toggling a sticker in the catalog immediately updates progress bars and counts on the progress screen.
+
+## User Inventory (Authenticated)
+
+**Service:** `UserInventoryService` reads/writes the authenticated user's sticker inventory from the Supabase `user_inventory` table. Follows `StickerService` pattern (injectable `SupabaseClient`, lazy resolution to avoid `Supabase.instance` in test fakes).
+
+**Methods:**
+- `fetchOwnedStickerIds()` → `Set<int>` (sticker_ids where status IN OWNED, DUPLICATE)
+- `toggleSticker(int stickerId)` → check existing row: if exists → delete, if not → insert as OWNED
+- `createWishlistShare()` → calls `create_wishlist_share` RPC, returns token string
+
+**Providers:**
+- `userInventoryServiceProvider` — Provider<UserInventoryService> singleton
+- `userInventoryProvider` — AsyncNotifierProvider<UserInventoryNotifier, Set<int>>. Same interface as `GuestInventoryNotifier`. Optimistic updates with rollback on error.
+
+**Effective inventory switching layer** (`effective_inventory_providers.dart`):
+- `effectiveInventoryProvider` — `Provider<AsyncValue<Set<int>>>`: watches `authStateProvider`, returns `userInventoryProvider` when authenticated, `guestInventoryProvider` when guest
+- `toggleEffectiveSticker(WidgetRef ref, int stickerId)` — top-level helper that delegates to the correct notifier based on auth state
+
+**Key files:**
+- `flutter_app/lib/features/stickers/data/services/user_inventory_service.dart` — Service with lazy SupabaseClient
+- `flutter_app/lib/features/stickers/data/providers/user_inventory_providers.dart` — Riverpod providers
+- `flutter_app/lib/features/stickers/data/providers/effective_inventory_providers.dart` — Auth-aware switching layer
+
+## Under-13 Wishlist
+
+**Route:** `/matches` (under-13 branch) — replaces the `SwappRestrictedEmptyState` dead-end with a useful wishlist view showing stickers the user still needs, plus a shareable URL for parents/friends to help find stickers offline.
+
+**Layout (`Under13WishlistView`):**
+1. Header `SwappCard(elevated)`: "My Wishlist" title, "{count} stickers needed" subtitle, `SwappProgressBar` (owned/total), share button
+2. Sticker count label
+3. `SliverGrid` of needed stickers — image at 40% opacity, sticker number, team label. Responsive column count (3–6).
+4. Empty state: "Collection complete!" with trophy icon when all stickers owned
+
+**Share flow:** Tap "Share Wishlist" → `WishlistShareNotifier.generateShareLink()` → `UserInventoryService.createWishlistShare()` RPC → constructs full URL (`SUPABASE_URL/functions/v1/share-wishlist?token=...`) → copies to clipboard via `Clipboard.setData()` → SnackBar confirmation. Error state shows retry SnackBar.
+
+**Providers** (`wishlist_providers.dart`):
+- `wishlistProvider` — `Provider<List<Sticker>>`: all stickers minus owned (derives from `allStickersProvider` − `effectiveInventoryProvider`)
+- `wishlistCountProvider` — `Provider<int>`: count of needed stickers
+- `wishlistShareProvider` — `NotifierProvider<WishlistShareNotifier, WishlistShareState>`: state machine (idle → loading → success with URL / error). `WishlistShareStatus` enum: `idle`, `loading`, `success`, `error`.
+
+**Database (migration `0017`):**
+- `wishlist_shares` table: `id`, `token` (64-char hex, unique), `user_id` (FK), `display_name` (snapshot), `expires_at` (30 days), `created_at`. RLS: authenticated read own rows only.
+- `create_wishlist_share()` RPC: SECURITY DEFINER. Reuses existing non-expired token. Generates 32-byte random hex token. Snapshots display_name. Returns `{success, token, already_exists}`. Granted to `authenticated` only.
+- `get_shared_wishlist(p_token text)` RPC: SECURITY DEFINER. Validates token + expiry. Returns all stickers NOT in user's OWNED/DUPLICATE inventory. Granted to `service_role` only (called by Edge Function).
+
+**Edge Function (`share-wishlist`):** Public GET endpoint. Query param: `?token=<hex>`. Calls `get_shared_wishlist(token)` via service_role client. Renders branded HTML page with stickers grouped by team (responsive CSS grid, Montserrat+Inter fonts, navy/gold/green palette). Error states for invalid/expired tokens.
+
+**Key files:**
+- `flutter_app/lib/features/stickers/data/providers/wishlist_providers.dart` — Wishlist derivation + share state machine
+- `flutter_app/lib/features/matching/presentation/widgets/under13_wishlist_view.dart` — Wishlist UI widget
+- `supabase/migrations/0017_add_wishlist_shares.sql` — Table + RPCs
+- `supabase/functions/share-wishlist/index.ts` — Public HTML endpoint
 
 ## Location Service
 
@@ -448,16 +507,18 @@ Rate limits: 120 req/min (authenticated), 30 req/min (guest). Returns 429 with `
 - `guest_migrations` — Tracks completed guest-to-member inventory migrations (device_uuid, user_id, items_sent, items_written). UNIQUE on (device_uuid, user_id) for migration-level idempotency. RLS read-only for user's own rows; writes via SECURITY DEFINER RPC only.
 - `swipes` — Records individual right-swipes between users (swiper_id, target_id). UNIQUE (swiper_id, target_id) prevents duplicates and enables idempotent `ON CONFLICT DO NOTHING`. RLS read-only for own swipes; writes via SECURITY DEFINER RPC only.
 - `matches` — Created when both users swipe right on each other. UUID primary key (used in Ably channel names). Canonical ordering (`CHECK user1_id < user2_id`) with UNIQUE constraint prevents duplicate A↔B matches. Status: `match_status` enum (PENDING/ACCEPTED/COMPLETED/CANCELLED/EXPIRED). RLS read-only for participants; writes via `create_match_if_mutual()` SECURITY DEFINER RPC.
+- `wishlist_shares` — Shareable wishlist links for under-13 users (token, user_id, display_name snapshot, expires_at 30 days). Token: 64-char hex (32 random bytes). RLS: authenticated read own rows only. Writes via `create_wishlist_share()` SECURITY DEFINER RPC. Public lookup via `get_shared_wishlist(token)` (service_role only).
 
 **Planned tables (from PRD):**
 - `messages` — Chat message persistence
 
-All tables require RLS policies. The `trade_audit_log` is append-only. Migration `0007` includes a runtime audit that **fails the migration** if any public table lacks RLS. Migration `0009` adds `verify_age()` SECURITY DEFINER RPC and immutability trigger for age fields. Migration `0010` adds parental consent token management RPCs and extends the immutability trigger to protect consent fields. Migration `0011` adds `guest_migrations` table and `migrate_guest_inventory()` RPC for idempotent guest-to-member inventory transfer. Migration `0012` replaces the broad `user_locations` SELECT policy with `find_nearby_users()` SECURITY DEFINER RPC (50 km max radius, excludes under-13, excludes caller). Migration `0013` adds `find_nearby_traders()` SECURITY DEFINER RPC — returns top 50 nearby users who have DUPLICATE stickers, ordered by `<->` KNN distance; includes `display_name`, `duplicate_count`, `needed_count`. Migration `0014` adds `get_reciprocal_matches(p_nearby_ids uuid[])` SECURITY DEFINER RPC — given nearby user IDs from `find_nearby_traders()`, returns reciprocal matches by intersecting DUPLICATE/NEEDED inventories. Returns `user_id`, `they_have_i_need`, `i_have_they_need`, `match_score` (LEAST of the two counts). Array clamped to 50. Authenticated only. Migration `0015` modifies `find_nearby_traders()` to also return `location_updated_at` (from `user_locations.updated_at`) as an activity signal for the Go matchmaking scoring engine. Migration `0016` creates `swipes` table, `matches` table (with `match_status` enum), and `create_match_if_mutual(p_target_id uuid)` SECURITY DEFINER RPC — records a right-swipe, checks for mutual interest, and creates a PENDING match with canonical user ordering if both users have swiped. Idempotent via `ON CONFLICT DO NOTHING` on both tables. Granted to `authenticated` only. Full policy matrix: [`docs/rls-policies.md`](docs/rls-policies.md).
+All tables require RLS policies. The `trade_audit_log` is append-only. Migration `0007` includes a runtime audit that **fails the migration** if any public table lacks RLS. Migration `0009` adds `verify_age()` SECURITY DEFINER RPC and immutability trigger for age fields. Migration `0010` adds parental consent token management RPCs and extends the immutability trigger to protect consent fields. Migration `0011` adds `guest_migrations` table and `migrate_guest_inventory()` RPC for idempotent guest-to-member inventory transfer. Migration `0012` replaces the broad `user_locations` SELECT policy with `find_nearby_users()` SECURITY DEFINER RPC (50 km max radius, excludes under-13, excludes caller). Migration `0013` adds `find_nearby_traders()` SECURITY DEFINER RPC — returns top 50 nearby users who have DUPLICATE stickers, ordered by `<->` KNN distance; includes `display_name`, `duplicate_count`, `needed_count`. Migration `0014` adds `get_reciprocal_matches(p_nearby_ids uuid[])` SECURITY DEFINER RPC — given nearby user IDs from `find_nearby_traders()`, returns reciprocal matches by intersecting DUPLICATE/NEEDED inventories. Returns `user_id`, `they_have_i_need`, `i_have_they_need`, `match_score` (LEAST of the two counts). Array clamped to 50. Authenticated only. Migration `0015` modifies `find_nearby_traders()` to also return `location_updated_at` (from `user_locations.updated_at`) as an activity signal for the Go matchmaking scoring engine. Migration `0016` creates `swipes` table, `matches` table (with `match_status` enum), and `create_match_if_mutual(p_target_id uuid)` SECURITY DEFINER RPC — records a right-swipe, checks for mutual interest, and creates a PENDING match with canonical user ordering if both users have swiped. Idempotent via `ON CONFLICT DO NOTHING` on both tables. Granted to `authenticated` only. Migration `0017` creates `wishlist_shares` table, `create_wishlist_share()` RPC (authenticated, reuses non-expired tokens, generates 32-byte hex), and `get_shared_wishlist(p_token)` RPC (service_role only, returns needed stickers for shared wishlist page). Full policy matrix: [`docs/rls-policies.md`](docs/rls-policies.md).
 
 **Supabase Edge Functions:**
 - `send-consent-email` — Authenticated POST. Sends parental consent email (Resend API in prod, console log in dev). Called from Flutter after `request_parental_consent()` RPC.
 - `confirm-consent` — Public GET. Web page served when parent clicks email link. Calls `confirm_parental_consent()` RPC via `service_role`. Returns branded HTML (success/error/expired).
 - `migrate-guest-inventory` — Authenticated POST. Receives device_uuid + inventory items array, validates, then calls `migrate_guest_inventory()` RPC to upsert items into cloud inventory. Idempotent (duplicate device+user migrations return previous result). Called from Flutter during post-signup onboarding.
+- `share-wishlist` — Public GET. Query param: `?token=<hex>`. Calls `get_shared_wishlist(token)` via service_role. Renders branded HTML page with needed stickers grouped by team (responsive CSS grid). Error states for invalid/expired tokens. Used by under-13 wishlist share flow.
 
 ## Target Market & Compliance
 
@@ -468,8 +529,8 @@ All tables require RLS policies. The `trade_audit_log` is append-only. Migration
 - Under-13 users (`is_under_13` flag in Supabase user metadata):
   - Blocked from chat (Go middleware returns 403 + Flutter screen-level guard)
   - Location features disabled
-  - Wishlist-only mode (no real-time trading)
-  - **Flutter enforcement:** Screen-level guards via `isUnder13Provider` on `MatchesScreen`, `MatchScreen`, and `ChatScreen`. Each renders a `SwappRestrictedEmptyState` (reusable widget in `shared/widgets/`) instead of functional UI. ChatScreen also skips Ably WebSocket initialization for under-13 users.
+  - Wishlist-only mode (no real-time trading) — `MatchesScreen` shows `Under13WishlistView` (needed stickers + shareable URL) instead of swipe discovery
+  - **Flutter enforcement:** Screen-level guards via `isUnder13Provider` on `MatchesScreen`, `MatchScreen`, and `ChatScreen`. `MatchesScreen` renders `Under13WishlistView` for under-13 users. `MatchScreen` and `ChatScreen` render `SwappRestrictedEmptyState`. ChatScreen also skips Ably WebSocket initialization for under-13 users.
 - Age verification at sign-up
 - Guest mode uses encrypted local storage (no server PII). On signup, local inventory is migrated via `migrate-guest-inventory` Edge Function (idempotent, no data loss).
 

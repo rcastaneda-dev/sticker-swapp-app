@@ -9,6 +9,7 @@ import '../../data/providers/match_notification_providers.dart';
 import '../widgets/match_celebration_overlay.dart';
 import '../widgets/swipe_card_stack.dart';
 import '../widgets/trader_card_skeleton.dart';
+import '../widgets/under13_wishlist_view.dart';
 
 class MatchesScreen extends ConsumerStatefulWidget {
   const MatchesScreen({super.key});
@@ -28,7 +29,7 @@ class _MatchesScreenState extends ConsumerState<MatchesScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Sticker Swapp'),
+        title: Text(isUnder13 ? 'My Wishlist' : 'Sticker Swapp'),
         actions: [
           if (!isUnder13) const _MatchesBadgeIcon(),
           IconButton(
@@ -39,15 +40,7 @@ class _MatchesScreenState extends ConsumerState<MatchesScreen> {
         ],
       ),
       body: isUnder13
-          ? SwappRestrictedEmptyState(
-              icon: Icons.swap_horiz,
-              title: 'Trading Unlocks Later',
-              subtitle:
-                  'Swipe matching is available for users 13 and older. '
-                  'You can still browse and track your sticker collection!',
-              actionLabel: 'Browse Stickers',
-              onAction: () => context.push('/catalog'),
-            )
+          ? const Under13WishlistView()
           : _buildDiscoveryBody(),
     );
   }

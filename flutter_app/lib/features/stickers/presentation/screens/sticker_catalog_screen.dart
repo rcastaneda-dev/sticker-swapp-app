@@ -4,7 +4,7 @@ import 'package:go_router/go_router.dart';
 import 'package:flutter_app/shared/shared.dart';
 import '../../data/models/sticker.dart';
 import '../../data/providers/sticker_providers.dart';
-import '../../data/providers/guest_inventory_providers.dart';
+import '../../data/providers/effective_inventory_providers.dart';
 
 class StickerCatalogScreen extends ConsumerWidget {
   const StickerCatalogScreen({super.key});
@@ -332,7 +332,7 @@ class _CollectionProgress extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final inventoryAsync = ref.watch(guestInventoryProvider);
+    final inventoryAsync = ref.watch(effectiveInventoryProvider);
     final ownedCount = inventoryAsync.value?.length ?? 0;
 
     return Padding(
@@ -418,12 +418,11 @@ class _StickerGridTile extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final colorScheme = Theme.of(context).colorScheme;
     final textTheme = Theme.of(context).textTheme;
-    final inventoryAsync = ref.watch(guestInventoryProvider);
+    final inventoryAsync = ref.watch(effectiveInventoryProvider);
     final isOwned = inventoryAsync.value?.contains(sticker.id) ?? false;
 
     return GestureDetector(
-      onTap: () =>
-          ref.read(guestInventoryProvider.notifier).toggleSticker(sticker.id),
+      onTap: () => toggleEffectiveSticker(ref, sticker.id),
       child: SwappCard(
         variant: SwappCardVariant.outlined,
         padding: const EdgeInsets.all(SwappTokens.spacingXs),

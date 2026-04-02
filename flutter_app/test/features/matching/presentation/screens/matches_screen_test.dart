@@ -13,6 +13,10 @@ import 'package:flutter_app/features/matching/data/providers/match_notification_
 import 'package:flutter_app/features/matching/data/services/match_discovery_service.dart';
 import 'package:flutter_app/features/matching/presentation/screens/matches_screen.dart';
 import 'package:flutter_app/features/matching/presentation/widgets/trader_card_skeleton.dart';
+import 'package:flutter_app/features/stickers/data/models/sticker.dart';
+import 'package:flutter_app/features/stickers/data/providers/collection_progress_providers.dart';
+import 'package:flutter_app/features/stickers/data/providers/user_inventory_providers.dart';
+import 'package:flutter_app/features/stickers/data/services/user_inventory_service.dart';
 import 'package:flutter_app/shared/shared.dart';
 
 // ── Helpers ───────────────────────────────────────────────────────────────
@@ -116,6 +120,19 @@ class _StubDiscoveryNotifier extends DiscoveryNotifier {
   Future<void> loadMore() async {}
 }
 
+class _FakeUserInventoryService extends UserInventoryService {
+  _FakeUserInventoryService() : super(client: null);
+
+  @override
+  Future<Set<int>> fetchOwnedStickerIds() async => {};
+
+  @override
+  Future<void> toggleSticker(int stickerId) async {}
+
+  @override
+  Future<String> createWishlistShare() async => 'test-token';
+}
+
 Widget _buildSubject({
   Map<String, dynamic>? metadata,
   DiscoveryState? discoveryState,
@@ -129,6 +146,15 @@ Widget _buildSubject({
       locationServiceProvider.overrideWithValue(_fakeLocationService()),
       matchDiscoveryServiceProvider
           .overrideWithValue(_FakeMatchDiscoveryService()),
+      // Provide sticker data for the Under13WishlistView
+      userInventoryServiceProvider
+          .overrideWithValue(_FakeUserInventoryService()),
+      allStickersProvider.overrideWith(
+        (ref) => Future.value(const [
+          Sticker(id: 1, stickerNumber: 1, title: 'S1', team: 'Argentina', page: 1, type: 'player'),
+          Sticker(id: 2, stickerNumber: 2, title: 'S2', team: 'Brazil', page: 2, type: 'player'),
+        ]),
+      ),
       if (discoveryState != null)
         discoveryProvider
             .overrideWith(() => _StubDiscoveryNotifier(discoveryState)),
@@ -171,17 +197,17 @@ ScoredMatch _match({String id = 'u1', String name = 'Test User'}) =>
 
 void main() {
   group('MatchesScreen', () {
-    testWidgets('shows trading empty state when user is under 13',
+    testWidgets('shows wishlist view when user is under 13',
         (tester) async {
       await tester.pumpWidget(_buildSubject(metadata: {
         'is_under_13': true,
         'age_verified_at': '2024-01-01T00:00:00Z',
         'parental_consent_at': '2024-06-01T00:00:00Z',
       }));
+      await tester.pumpAndSettle();
 
-      expect(find.text('Trading Unlocks Later'), findsOneWidget);
-      expect(find.text('Browse Stickers'), findsOneWidget);
-      expect(find.byIcon(Icons.swap_horiz), findsOneWidget);
+      expect(find.text('My Wishlist'), findsWidgets);
+      expect(find.text('Share Wishlist'), findsOneWidget);
     });
 
     testWidgets('13+ user sees location loading state initially',

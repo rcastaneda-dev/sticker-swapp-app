@@ -11,6 +11,7 @@ import (
 	"github.com/wc2026-stickers/sticker-swap-app/go_service/internal/matchmaking"
 	"github.com/wc2026-stickers/sticker-swap-app/go_service/internal/middleware"
 	"github.com/wc2026-stickers/sticker-swap-app/go_service/internal/onesignal"
+	"github.com/wc2026-stickers/sticker-swap-app/go_service/internal/trades"
 	"github.com/wc2026-stickers/sticker-swap-app/go_service/internal/ws"
 )
 
@@ -29,6 +30,7 @@ type RouterConfig struct {
 	PushNotifier         onesignal.Notifier
 	DisplayNames         DisplayNameLookup
 	AblyPublisher        ably.Publisher
+	InventoryLocker      trades.InventoryLocker
 }
 
 // NewRouter constructs a Chi router with all routes and middleware.
@@ -75,6 +77,20 @@ func NewRouter(cfg RouterConfig) chi.Router {
 			middleware.ReadDeviceIntegrity(),
 			middleware.RequireAge13Plus(),
 		).Post("/matches", matchCreateHandler.CreateMatch)
+
+		// Inventory locks — lock/release stickers for a trade
+		tradeHandler := NewTradeHandler(cfg.InventoryLocker)
+		r.Route("/matches/{matchId}/lock", func(r chi.Router) {
+			r.Use(
+				middleware.RateLimit(120, 60),
+				middleware.VerifyAttestation(cfg.AttestationVerifier, cfg.AttestationDisabled),
+				middleware.ValidateJWT(cfg.SupabaseURL, cfg.SupabaseSecret),
+				middleware.ReadDeviceIntegrity(),
+				middleware.RequireAge13Plus(),
+			)
+			r.Post("/", tradeHandler.LockInventory)
+			r.Delete("/", tradeHandler.ReleaseInventory)
+		})
 
 		// WebSocket — JWT + age gate, no attestation (connection pipe only)
 		r.With(

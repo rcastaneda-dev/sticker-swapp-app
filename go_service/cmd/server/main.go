@@ -17,6 +17,7 @@ import (
 	"github.com/wc2026-stickers/sticker-swap-app/go_service/internal/matches"
 	"github.com/wc2026-stickers/sticker-swap-app/go_service/internal/matchmaking"
 	"github.com/wc2026-stickers/sticker-swap-app/go_service/internal/onesignal"
+	"github.com/wc2026-stickers/sticker-swap-app/go_service/internal/trades"
 	"github.com/wc2026-stickers/sticker-swap-app/go_service/internal/ws"
 )
 
@@ -67,6 +68,9 @@ func main() {
 	// Initialize match creator
 	matchCreator := matches.NewMatchCreator(pool)
 
+	// Initialize inventory locker
+	inventoryLocker := trades.NewInventoryLocker(pool)
+
 	// Initialize push notifications — optional (NoopNotifier if credentials missing)
 	var pushNotifier onesignal.Notifier
 	onesignalAppID := os.Getenv("ONESIGNAL_APP_ID")
@@ -112,6 +116,7 @@ func main() {
 		PushNotifier:        pushNotifier,
 		DisplayNames:        &api.DBDisplayNameLookup{Pool: pool},
 		AblyPublisher:       ablyPublisher,
+		InventoryLocker:     inventoryLocker,
 	})
 
 	// Start HTTP server

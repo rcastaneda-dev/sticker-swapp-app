@@ -101,7 +101,7 @@ sticker-swapp-app/
 │       ├── matchmaking/   # Scoring engine, in-memory cache
 │       ├── onesignal/     # Push notification sending (OneSignal REST API)
 │       ├── ws/            # WebSocket connection manager (goroutine-per-connection)
-│       └── trades/        # Inventory locking (InventoryLocker interface, DBInventoryLocker)
+│       └── trades/        # Inventory locking + trade execution (InventoryLocker, TradeExecutor interfaces)
 ├── supabase/              # Migrations & Edge Functions
 │   ├── migrations/
 │   └── functions/
@@ -452,9 +452,10 @@ POST /api/v1/matches → mutual match (201) → async goroutine:
 | POST   | `/api/v1/matches`   | JWT    | Required    | 120/min    | Create match (mutual swipe)    |
 | POST   | `/api/v1/matches/{matchId}/lock` | JWT | Required | 120/min | Lock caller's DUPLICATE stickers for trade |
 | DELETE | `/api/v1/matches/{matchId}/lock` | JWT | Required | 120/min | Release inventory locks (MANUAL_RELEASE) |
+| POST   | `/api/v1/trades`    | JWT    | Required    | 120/min + TradeLimiter | Atomic trade execution |
 | GET    | `/api/v1/ws`        | JWT    | None        | 30/min     | WebSocket upgrade (1 conn/user)|
 
-Rate limits: 120 req/min (authenticated), 30 req/min (guest). Returns 429 with `Retry-After: 60`.
+Rate limits: 120 req/min (authenticated), 30 req/min (guest). Returns 429 with `Retry-After: 60`. Trade endpoint additionally uses `TradeLimiter` middleware (20/hour normal, 5/hour compromised devices).
 
 ## Matchmaking Engine
 
@@ -527,7 +528,37 @@ Rate limits: 120 req/min (authenticated), 30 req/min (guest). Returns 429 with `
 - `supabase/migrations/0018_add_inventory_locks.sql` — Table + RPCs
 - `go_service/internal/trades/locker.go` — `InventoryLocker` interface, `LockResult`, `ReleaseResult`
 - `go_service/internal/trades/db_locker.go` — `DBInventoryLocker` pgx implementation
-- `go_service/internal/api/trades.go` — `TradeHandler` with `LockInventory` and `ReleaseInventory` handlers
+- `go_service/internal/api/trades.go` — `TradeHandler` with `LockInventory`, `ReleaseInventory`, and `Execute` handlers
+
+## Trade Execution
+
+**Endpoint:** `POST /api/v1/trades` — atomic trade execution. Requires JWT + attestation + age 13+ + `TradeLimiter`.
+
+**Request body:** `{match_id, initiator_sticker_ids, responder_sticker_ids, idempotency_key}` — all fields required. `match_id` and `idempotency_key` must be valid UUIDs. Sticker arrays must be non-empty. The caller (from JWT) is the initiator.
+
+**Atomic steps (single PostgreSQL transaction via `execute_trade()` SECURITY DEFINER RPC):**
+1. Idempotency check — if `idempotency_key` already exists in `trade_audit_log`, return existing `trade_id` with `already_completed: true`
+2. Validate match — exists, PENDING status, initiator is participant; derive responder
+3. Advisory lock — `pg_advisory_xact_lock(hashtext(match_id))` serializes concurrent attempts
+4. Verify active inventory locks — both initiator and responder must have active `inventory_locks` rows
+5. Verify sticker subsets — offered sticker arrays must be contained in (`<@`) locked sticker arrays
+6. Row-level lock — `SELECT FOR UPDATE` on affected `user_inventory` rows
+7. Transfer stickers — for each sticker: sender's DUPLICATE quantity decremented (or downgraded to OWNED if quantity=1); recipient gets OWNED (or DUPLICATE+1 if already owned)
+8. Audit — calls existing `record_trade()` with COMPLETED status
+9. Update match — `SET status = 'COMPLETED'`
+10. Release locks — calls existing `release_inventory_locks(match_id, 'TRADE_COMPLETED')`
+
+**Response:**
+- `200 OK` — `{success: true, trade_id, match_id, initiator_id, responder_id, initiator_sticker_ids, responder_sticker_ids, status: "COMPLETED"}` (also for idempotent replays with `already_completed: true`)
+- `409 Conflict` — `{success: false, error: "MATCH_NOT_FOUND"|"NOT_PARTICIPANT"|"MATCH_NOT_PENDING"|"NO_ACTIVE_LOCK_INITIATOR"|"NO_ACTIVE_LOCK_RESPONDER"|"STICKERS_NOT_IN_LOCK"}`
+
+**Concurrency guarantees:** Advisory lock on match + `SELECT FOR UPDATE` on inventory rows + idempotency key = zero double-trades.
+
+**Key files:**
+- `supabase/migrations/0019_execute_trade.sql` — `execute_trade()` SECURITY DEFINER RPC
+- `go_service/internal/trades/executor.go` — `TradeExecutor` interface, `TradeRequest`, `TradeResult`
+- `go_service/internal/trades/db_executor.go` — `DBTradeExecutor` pgx implementation
+- `go_service/internal/api/trades.go` — `TradeHandler.Execute` HTTP handler
 
 ## WebSocket Connection Manager
 
@@ -569,7 +600,7 @@ Rate limits: 120 req/min (authenticated), 30 req/min (guest). Returns 429 with `
 **Planned tables (from PRD):**
 - `messages` — Chat message persistence
 
-All tables require RLS policies. The `trade_audit_log` is append-only. Migration `0007` includes a runtime audit that **fails the migration** if any public table lacks RLS. Migration `0009` adds `verify_age()` SECURITY DEFINER RPC and immutability trigger for age fields. Migration `0010` adds parental consent token management RPCs and extends the immutability trigger to protect consent fields. Migration `0011` adds `guest_migrations` table and `migrate_guest_inventory()` RPC for idempotent guest-to-member inventory transfer. Migration `0012` replaces the broad `user_locations` SELECT policy with `find_nearby_users()` SECURITY DEFINER RPC (50 km max radius, excludes under-13, excludes caller). Migration `0013` adds `find_nearby_traders()` SECURITY DEFINER RPC — returns top 50 nearby users who have DUPLICATE stickers, ordered by `<->` KNN distance; includes `display_name`, `duplicate_count`, `needed_count`. Migration `0014` adds `get_reciprocal_matches(p_nearby_ids uuid[])` SECURITY DEFINER RPC — given nearby user IDs from `find_nearby_traders()`, returns reciprocal matches by intersecting DUPLICATE/NEEDED inventories. Returns `user_id`, `they_have_i_need`, `i_have_they_need`, `match_score` (LEAST of the two counts). Array clamped to 50. Authenticated only. Migration `0015` modifies `find_nearby_traders()` to also return `location_updated_at` (from `user_locations.updated_at`) as an activity signal for the Go matchmaking scoring engine. Migration `0016` creates `swipes` table, `matches` table (with `match_status` enum), and `create_match_if_mutual(p_target_id uuid)` SECURITY DEFINER RPC — records a right-swipe, checks for mutual interest, and creates a PENDING match with canonical user ordering if both users have swiped. Idempotent via `ON CONFLICT DO NOTHING` on both tables. Granted to `authenticated` only. Migration `0017` creates `wishlist_shares` table, `create_wishlist_share()` RPC (authenticated, reuses non-expired tokens, generates 32-byte hex), and `get_shared_wishlist(p_token)` RPC (service_role only, returns needed stickers for shared wishlist page). Migration `0018` creates `inventory_locks` table with `lock_release_reason` enum (EXPIRED/TRADE_COMPLETED/TRADE_CANCELLED/MANUAL_RELEASE), `lock_inventory_for_trade(p_match_id)` RPC (authenticated, advisory lock + SELECT FOR UPDATE + conflict check, 15-min TTL, extends existing locks), and `release_inventory_locks(p_match_id, p_reason)` RPC (service_role only, releases all active locks for both participants). Full policy matrix: [`docs/rls-policies.md`](docs/rls-policies.md).
+All tables require RLS policies. The `trade_audit_log` is append-only. Migration `0007` includes a runtime audit that **fails the migration** if any public table lacks RLS. Migration `0009` adds `verify_age()` SECURITY DEFINER RPC and immutability trigger for age fields. Migration `0010` adds parental consent token management RPCs and extends the immutability trigger to protect consent fields. Migration `0011` adds `guest_migrations` table and `migrate_guest_inventory()` RPC for idempotent guest-to-member inventory transfer. Migration `0012` replaces the broad `user_locations` SELECT policy with `find_nearby_users()` SECURITY DEFINER RPC (50 km max radius, excludes under-13, excludes caller). Migration `0013` adds `find_nearby_traders()` SECURITY DEFINER RPC — returns top 50 nearby users who have DUPLICATE stickers, ordered by `<->` KNN distance; includes `display_name`, `duplicate_count`, `needed_count`. Migration `0014` adds `get_reciprocal_matches(p_nearby_ids uuid[])` SECURITY DEFINER RPC — given nearby user IDs from `find_nearby_traders()`, returns reciprocal matches by intersecting DUPLICATE/NEEDED inventories. Returns `user_id`, `they_have_i_need`, `i_have_they_need`, `match_score` (LEAST of the two counts). Array clamped to 50. Authenticated only. Migration `0015` modifies `find_nearby_traders()` to also return `location_updated_at` (from `user_locations.updated_at`) as an activity signal for the Go matchmaking scoring engine. Migration `0016` creates `swipes` table, `matches` table (with `match_status` enum), and `create_match_if_mutual(p_target_id uuid)` SECURITY DEFINER RPC — records a right-swipe, checks for mutual interest, and creates a PENDING match with canonical user ordering if both users have swiped. Idempotent via `ON CONFLICT DO NOTHING` on both tables. Granted to `authenticated` only. Migration `0017` creates `wishlist_shares` table, `create_wishlist_share()` RPC (authenticated, reuses non-expired tokens, generates 32-byte hex), and `get_shared_wishlist(p_token)` RPC (service_role only, returns needed stickers for shared wishlist page). Migration `0018` creates `inventory_locks` table with `lock_release_reason` enum (EXPIRED/TRADE_COMPLETED/TRADE_CANCELLED/MANUAL_RELEASE), `lock_inventory_for_trade(p_match_id)` RPC (authenticated, advisory lock + SELECT FOR UPDATE + conflict check, 15-min TTL, extends existing locks), and `release_inventory_locks(p_match_id, p_reason)` RPC (service_role only, releases all active locks for both participants). Full policy matrix: [`docs/rls-policies.md`](docs/rls-policies.md). Migration `0019` creates `execute_trade(p_match_id, p_initiator_id, p_initiator_sticker_ids, p_responder_sticker_ids, p_idempotency_key)` SECURITY DEFINER RPC (service_role only) — atomic trade execution: idempotency check → match validation → advisory lock → verify active inventory locks → verify sticker subsets → SELECT FOR UPDATE on inventory → transfer stickers (DUPLICATE→OWNED sender, OWNED/DUPLICATE upsert recipient) → call `record_trade()` → update match to COMPLETED → call `release_inventory_locks(TRADE_COMPLETED)`. Idempotent by `p_idempotency_key`.
 
 **Supabase Edge Functions:**
 - `send-consent-email` — Authenticated POST. Sends parental consent email (Resend API in prod, console log in dev). Called from Flutter after `request_parental_consent()` RPC.

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -14,8 +15,9 @@ import (
 	"github.com/wc2026-stickers/sticker-swap-app/go_service/internal/trades"
 )
 
-// Compile-time interface check.
+// Compile-time interface checks.
 var _ trades.InventoryLocker = (*mockInventoryLocker)(nil)
+var _ trades.TradeExecutor = (*mockTradeExecutor)(nil)
 
 type mockInventoryLocker struct {
 	lockResult    *trades.LockResult
@@ -43,8 +45,23 @@ func (m *mockInventoryLocker) ReleaseLocks(_ context.Context, matchID, reason st
 	return m.releaseResult, m.releaseErr
 }
 
-func newTestTradeHandler(locker trades.InventoryLocker) *TradeHandler {
-	return NewTradeHandler(locker)
+type mockTradeExecutor struct {
+	result   *trades.TradeResult
+	err      error
+	called   bool
+	callerID string
+	req      trades.TradeRequest
+}
+
+func (m *mockTradeExecutor) ExecuteTrade(_ context.Context, callerID string, req trades.TradeRequest) (*trades.TradeResult, error) {
+	m.called = true
+	m.callerID = callerID
+	m.req = req
+	return m.result, m.err
+}
+
+func newTestTradeHandler(locker trades.InventoryLocker, executor trades.TradeExecutor) *TradeHandler {
+	return NewTradeHandler(locker, executor)
 }
 
 func newLockRequest(userID, matchID string) *http.Request {
@@ -77,6 +94,18 @@ func newReleaseRequest(userID, matchID string) *http.Request {
 	return req
 }
 
+func newExecuteRequest(userID string, body executeTradeRequest) *http.Request {
+	bodyBytes, _ := json.Marshal(body)
+	req := httptest.NewRequest("POST", "/api/v1/trades", bytes.NewReader(bodyBytes))
+	req.Header.Set("Content-Type", "application/json")
+
+	if userID != "" {
+		ctx := context.WithValue(req.Context(), ably.UserIDKey(), userID)
+		req = req.WithContext(ctx)
+	}
+	return req
+}
+
 // ---------------------------------------------------------------------------
 // LockInventory tests
 // ---------------------------------------------------------------------------
@@ -92,7 +121,7 @@ func TestLockInventory_Success(t *testing.T) {
 			Extended:   false,
 		},
 	}
-	handler := newTestTradeHandler(locker)
+	handler := newTestTradeHandler(locker, &mockTradeExecutor{})
 
 	req := newLockRequest("11111111-1111-1111-1111-111111111111", "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
 	rec := httptest.NewRecorder()
@@ -131,7 +160,7 @@ func TestLockInventory_Extended(t *testing.T) {
 			Extended:   true,
 		},
 	}
-	handler := newTestTradeHandler(locker)
+	handler := newTestTradeHandler(locker, &mockTradeExecutor{})
 
 	req := newLockRequest("11111111-1111-1111-1111-111111111111", "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
 	rec := httptest.NewRecorder()
@@ -158,7 +187,7 @@ func TestLockInventory_Conflict(t *testing.T) {
 			Error:   &errMsg,
 		},
 	}
-	handler := newTestTradeHandler(locker)
+	handler := newTestTradeHandler(locker, &mockTradeExecutor{})
 
 	req := newLockRequest("11111111-1111-1111-1111-111111111111", "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
 	rec := httptest.NewRecorder()
@@ -188,7 +217,7 @@ func TestLockInventory_NoDuplicates(t *testing.T) {
 			Error:   &errMsg,
 		},
 	}
-	handler := newTestTradeHandler(locker)
+	handler := newTestTradeHandler(locker, &mockTradeExecutor{})
 
 	req := newLockRequest("11111111-1111-1111-1111-111111111111", "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
 	rec := httptest.NewRecorder()
@@ -200,7 +229,7 @@ func TestLockInventory_NoDuplicates(t *testing.T) {
 }
 
 func TestLockInventory_Unauthorized(t *testing.T) {
-	handler := newTestTradeHandler(&mockInventoryLocker{})
+	handler := newTestTradeHandler(&mockInventoryLocker{}, &mockTradeExecutor{})
 
 	req := newLockRequest("", "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
 	rec := httptest.NewRecorder()
@@ -213,7 +242,7 @@ func TestLockInventory_Unauthorized(t *testing.T) {
 }
 
 func TestLockInventory_InvalidMatchID(t *testing.T) {
-	handler := newTestTradeHandler(&mockInventoryLocker{})
+	handler := newTestTradeHandler(&mockInventoryLocker{}, &mockTradeExecutor{})
 
 	req := newLockRequest("11111111-1111-1111-1111-111111111111", "not-a-uuid")
 	rec := httptest.NewRecorder()
@@ -229,7 +258,7 @@ func TestLockInventory_DBError(t *testing.T) {
 	locker := &mockInventoryLocker{
 		lockErr: errors.New("connection lost"),
 	}
-	handler := newTestTradeHandler(locker)
+	handler := newTestTradeHandler(locker, &mockTradeExecutor{})
 
 	req := newLockRequest("11111111-1111-1111-1111-111111111111", "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
 	rec := httptest.NewRecorder()
@@ -249,7 +278,7 @@ func TestLockInventory_PassesCorrectArgs(t *testing.T) {
 			LockCount:  1,
 		},
 	}
-	handler := newTestTradeHandler(locker)
+	handler := newTestTradeHandler(locker, &mockTradeExecutor{})
 
 	callerID := "11111111-1111-1111-1111-111111111111"
 	matchID := "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
@@ -279,7 +308,7 @@ func TestReleaseInventory_Success(t *testing.T) {
 			ReleasedCount: 2,
 		},
 	}
-	handler := newTestTradeHandler(locker)
+	handler := newTestTradeHandler(locker, &mockTradeExecutor{})
 
 	req := newReleaseRequest("11111111-1111-1111-1111-111111111111", "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
 	rec := httptest.NewRecorder()
@@ -302,7 +331,7 @@ func TestReleaseInventory_Success(t *testing.T) {
 }
 
 func TestReleaseInventory_Unauthorized(t *testing.T) {
-	handler := newTestTradeHandler(&mockInventoryLocker{})
+	handler := newTestTradeHandler(&mockInventoryLocker{}, &mockTradeExecutor{})
 
 	req := newReleaseRequest("", "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
 	rec := httptest.NewRecorder()
@@ -315,7 +344,7 @@ func TestReleaseInventory_Unauthorized(t *testing.T) {
 }
 
 func TestReleaseInventory_InvalidMatchID(t *testing.T) {
-	handler := newTestTradeHandler(&mockInventoryLocker{})
+	handler := newTestTradeHandler(&mockInventoryLocker{}, &mockTradeExecutor{})
 
 	req := newReleaseRequest("11111111-1111-1111-1111-111111111111", "not-a-uuid")
 	rec := httptest.NewRecorder()
@@ -331,7 +360,7 @@ func TestReleaseInventory_DBError(t *testing.T) {
 	locker := &mockInventoryLocker{
 		releaseErr: errors.New("connection lost"),
 	}
-	handler := newTestTradeHandler(locker)
+	handler := newTestTradeHandler(locker, &mockTradeExecutor{})
 
 	req := newReleaseRequest("11111111-1111-1111-1111-111111111111", "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
 	rec := httptest.NewRecorder()
@@ -350,7 +379,7 @@ func TestReleaseInventory_PassesManualReason(t *testing.T) {
 			ReleasedCount: 1,
 		},
 	}
-	handler := newTestTradeHandler(locker)
+	handler := newTestTradeHandler(locker, &mockTradeExecutor{})
 
 	req := newReleaseRequest("11111111-1111-1111-1111-111111111111", "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
 	rec := httptest.NewRecorder()
@@ -361,5 +390,343 @@ func TestReleaseInventory_PassesManualReason(t *testing.T) {
 	}
 	if locker.reason != "MANUAL_RELEASE" {
 		t.Fatalf("expected reason %q, got %q", "MANUAL_RELEASE", locker.reason)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Execute (trade) tests
+// ---------------------------------------------------------------------------
+
+var (
+	testUserID        = "11111111-1111-1111-1111-111111111111"
+	testMatchID       = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+	testIdempotencyKey = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+	testTradeID       = "cccccccc-cccc-cccc-cccc-cccccccccccc"
+	testResponderID   = "dddddddd-dddd-dddd-dddd-dddddddddddd"
+	testStatus        = "COMPLETED"
+)
+
+func validExecuteBody() executeTradeRequest {
+	return executeTradeRequest{
+		MatchID:             testMatchID,
+		InitiatorStickerIDs: []int{10, 25, 42},
+		ResponderStickerIDs: []int{5, 88},
+		IdempotencyKey:      testIdempotencyKey,
+	}
+}
+
+func successTradeResult() *trades.TradeResult {
+	return &trades.TradeResult{
+		Success:             true,
+		TradeID:             &testTradeID,
+		MatchID:             &testMatchID,
+		InitiatorID:         &testUserID,
+		ResponderID:         &testResponderID,
+		InitiatorStickerIDs: []int{10, 25, 42},
+		ResponderStickerIDs: []int{5, 88},
+		Status:              &testStatus,
+	}
+}
+
+func TestExecuteTrade_Success(t *testing.T) {
+	executor := &mockTradeExecutor{result: successTradeResult()}
+	handler := newTestTradeHandler(&mockInventoryLocker{}, executor)
+
+	req := newExecuteRequest(testUserID, validExecuteBody())
+	rec := httptest.NewRecorder()
+	handler.Execute(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var result trades.TradeResult
+	if err := json.NewDecoder(rec.Body).Decode(&result); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if !result.Success {
+		t.Fatal("expected success to be true")
+	}
+	if result.TradeID == nil || *result.TradeID != testTradeID {
+		t.Fatalf("expected trade_id %q, got %v", testTradeID, result.TradeID)
+	}
+	if len(result.InitiatorStickerIDs) != 3 {
+		t.Fatalf("expected 3 initiator stickers, got %d", len(result.InitiatorStickerIDs))
+	}
+	if len(result.ResponderStickerIDs) != 2 {
+		t.Fatalf("expected 2 responder stickers, got %d", len(result.ResponderStickerIDs))
+	}
+}
+
+func TestExecuteTrade_AlreadyCompleted(t *testing.T) {
+	r := successTradeResult()
+	r.AlreadyCompleted = true
+	executor := &mockTradeExecutor{result: r}
+	handler := newTestTradeHandler(&mockInventoryLocker{}, executor)
+
+	req := newExecuteRequest(testUserID, validExecuteBody())
+	rec := httptest.NewRecorder()
+	handler.Execute(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+
+	var result trades.TradeResult
+	if err := json.NewDecoder(rec.Body).Decode(&result); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if !result.Success {
+		t.Fatal("expected success to be true")
+	}
+	if !result.AlreadyCompleted {
+		t.Fatal("expected already_completed to be true")
+	}
+}
+
+func TestExecuteTrade_MatchNotFound(t *testing.T) {
+	errMsg := "MATCH_NOT_FOUND"
+	executor := &mockTradeExecutor{
+		result: &trades.TradeResult{Success: false, Error: &errMsg},
+	}
+	handler := newTestTradeHandler(&mockInventoryLocker{}, executor)
+
+	req := newExecuteRequest(testUserID, validExecuteBody())
+	rec := httptest.NewRecorder()
+	handler.Execute(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d", rec.Code)
+	}
+
+	var result trades.TradeResult
+	if err := json.NewDecoder(rec.Body).Decode(&result); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if result.Success {
+		t.Fatal("expected success to be false")
+	}
+	if result.Error == nil || *result.Error != "MATCH_NOT_FOUND" {
+		t.Fatalf("expected error MATCH_NOT_FOUND, got %v", result.Error)
+	}
+}
+
+func TestExecuteTrade_NotParticipant(t *testing.T) {
+	errMsg := "NOT_PARTICIPANT"
+	executor := &mockTradeExecutor{
+		result: &trades.TradeResult{Success: false, Error: &errMsg},
+	}
+	handler := newTestTradeHandler(&mockInventoryLocker{}, executor)
+
+	req := newExecuteRequest(testUserID, validExecuteBody())
+	rec := httptest.NewRecorder()
+	handler.Execute(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d", rec.Code)
+	}
+}
+
+func TestExecuteTrade_MatchNotPending(t *testing.T) {
+	errMsg := "MATCH_NOT_PENDING"
+	executor := &mockTradeExecutor{
+		result: &trades.TradeResult{Success: false, Error: &errMsg},
+	}
+	handler := newTestTradeHandler(&mockInventoryLocker{}, executor)
+
+	req := newExecuteRequest(testUserID, validExecuteBody())
+	rec := httptest.NewRecorder()
+	handler.Execute(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d", rec.Code)
+	}
+}
+
+func TestExecuteTrade_NoActiveLockInitiator(t *testing.T) {
+	errMsg := "NO_ACTIVE_LOCK_INITIATOR"
+	executor := &mockTradeExecutor{
+		result: &trades.TradeResult{Success: false, Error: &errMsg},
+	}
+	handler := newTestTradeHandler(&mockInventoryLocker{}, executor)
+
+	req := newExecuteRequest(testUserID, validExecuteBody())
+	rec := httptest.NewRecorder()
+	handler.Execute(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d", rec.Code)
+	}
+}
+
+func TestExecuteTrade_NoActiveLockResponder(t *testing.T) {
+	errMsg := "NO_ACTIVE_LOCK_RESPONDER"
+	executor := &mockTradeExecutor{
+		result: &trades.TradeResult{Success: false, Error: &errMsg},
+	}
+	handler := newTestTradeHandler(&mockInventoryLocker{}, executor)
+
+	req := newExecuteRequest(testUserID, validExecuteBody())
+	rec := httptest.NewRecorder()
+	handler.Execute(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d", rec.Code)
+	}
+}
+
+func TestExecuteTrade_StickersNotInLock(t *testing.T) {
+	errMsg := "STICKERS_NOT_IN_LOCK"
+	executor := &mockTradeExecutor{
+		result: &trades.TradeResult{Success: false, Error: &errMsg},
+	}
+	handler := newTestTradeHandler(&mockInventoryLocker{}, executor)
+
+	req := newExecuteRequest(testUserID, validExecuteBody())
+	rec := httptest.NewRecorder()
+	handler.Execute(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d", rec.Code)
+	}
+
+	var result trades.TradeResult
+	if err := json.NewDecoder(rec.Body).Decode(&result); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if result.Error == nil || *result.Error != "STICKERS_NOT_IN_LOCK" {
+		t.Fatalf("expected error STICKERS_NOT_IN_LOCK, got %v", result.Error)
+	}
+}
+
+func TestExecuteTrade_Unauthorized(t *testing.T) {
+	handler := newTestTradeHandler(&mockInventoryLocker{}, &mockTradeExecutor{})
+
+	req := newExecuteRequest("", validExecuteBody())
+	rec := httptest.NewRecorder()
+	handler.Execute(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", rec.Code)
+	}
+	assertMatchErrorCode(t, rec, "AUTH_REQUIRED")
+}
+
+func TestExecuteTrade_InvalidBody(t *testing.T) {
+	handler := newTestTradeHandler(&mockInventoryLocker{}, &mockTradeExecutor{})
+
+	req := httptest.NewRequest("POST", "/api/v1/trades", bytes.NewReader([]byte("not json")))
+	ctx := context.WithValue(req.Context(), ably.UserIDKey(), testUserID)
+	req = req.WithContext(ctx)
+
+	rec := httptest.NewRecorder()
+	handler.Execute(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", rec.Code)
+	}
+	assertMatchErrorCode(t, rec, "INVALID_BODY")
+}
+
+func TestExecuteTrade_InvalidMatchID(t *testing.T) {
+	handler := newTestTradeHandler(&mockInventoryLocker{}, &mockTradeExecutor{})
+
+	body := validExecuteBody()
+	body.MatchID = "not-a-uuid"
+	req := newExecuteRequest(testUserID, body)
+	rec := httptest.NewRecorder()
+	handler.Execute(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", rec.Code)
+	}
+	assertMatchErrorCode(t, rec, "INVALID_PARAMS")
+}
+
+func TestExecuteTrade_InvalidIdempotencyKey(t *testing.T) {
+	handler := newTestTradeHandler(&mockInventoryLocker{}, &mockTradeExecutor{})
+
+	body := validExecuteBody()
+	body.IdempotencyKey = "not-a-uuid"
+	req := newExecuteRequest(testUserID, body)
+	rec := httptest.NewRecorder()
+	handler.Execute(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", rec.Code)
+	}
+	assertMatchErrorCode(t, rec, "INVALID_PARAMS")
+}
+
+func TestExecuteTrade_EmptyInitiatorStickers(t *testing.T) {
+	handler := newTestTradeHandler(&mockInventoryLocker{}, &mockTradeExecutor{})
+
+	body := validExecuteBody()
+	body.InitiatorStickerIDs = []int{}
+	req := newExecuteRequest(testUserID, body)
+	rec := httptest.NewRecorder()
+	handler.Execute(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", rec.Code)
+	}
+	assertMatchErrorCode(t, rec, "INVALID_PARAMS")
+}
+
+func TestExecuteTrade_EmptyResponderStickers(t *testing.T) {
+	handler := newTestTradeHandler(&mockInventoryLocker{}, &mockTradeExecutor{})
+
+	body := validExecuteBody()
+	body.ResponderStickerIDs = []int{}
+	req := newExecuteRequest(testUserID, body)
+	rec := httptest.NewRecorder()
+	handler.Execute(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", rec.Code)
+	}
+	assertMatchErrorCode(t, rec, "INVALID_PARAMS")
+}
+
+func TestExecuteTrade_DBError(t *testing.T) {
+	executor := &mockTradeExecutor{err: errors.New("connection lost")}
+	handler := newTestTradeHandler(&mockInventoryLocker{}, executor)
+
+	req := newExecuteRequest(testUserID, validExecuteBody())
+	rec := httptest.NewRecorder()
+	handler.Execute(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d", rec.Code)
+	}
+	assertMatchErrorCode(t, rec, "TRADE_ERROR")
+}
+
+func TestExecuteTrade_PassesCorrectArgs(t *testing.T) {
+	executor := &mockTradeExecutor{result: successTradeResult()}
+	handler := newTestTradeHandler(&mockInventoryLocker{}, executor)
+
+	body := validExecuteBody()
+	req := newExecuteRequest(testUserID, body)
+	rec := httptest.NewRecorder()
+	handler.Execute(rec, req)
+
+	if !executor.called {
+		t.Fatal("expected executor.ExecuteTrade to be called")
+	}
+	if executor.callerID != testUserID {
+		t.Fatalf("expected callerID %q, got %q", testUserID, executor.callerID)
+	}
+	if executor.req.MatchID != testMatchID {
+		t.Fatalf("expected matchID %q, got %q", testMatchID, executor.req.MatchID)
+	}
+	if executor.req.IdempotencyKey != testIdempotencyKey {
+		t.Fatalf("expected idempotencyKey %q, got %q", testIdempotencyKey, executor.req.IdempotencyKey)
+	}
+	if len(executor.req.InitiatorStickerIDs) != 3 {
+		t.Fatalf("expected 3 initiator stickers, got %d", len(executor.req.InitiatorStickerIDs))
+	}
+	if len(executor.req.ResponderStickerIDs) != 2 {
+		t.Fatalf("expected 2 responder stickers, got %d", len(executor.req.ResponderStickerIDs))
 	}
 }

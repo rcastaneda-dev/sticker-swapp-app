@@ -31,6 +31,7 @@ type RouterConfig struct {
 	DisplayNames         DisplayNameLookup
 	AblyPublisher        ably.Publisher
 	InventoryLocker      trades.InventoryLocker
+	TradeExecutor        trades.TradeExecutor
 }
 
 // NewRouter constructs a Chi router with all routes and middleware.
@@ -78,8 +79,8 @@ func NewRouter(cfg RouterConfig) chi.Router {
 			middleware.RequireAge13Plus(),
 		).Post("/matches", matchCreateHandler.CreateMatch)
 
-		// Inventory locks — lock/release stickers for a trade
-		tradeHandler := NewTradeHandler(cfg.InventoryLocker)
+		// Trade operations — lock/release stickers and execute trades
+		tradeHandler := NewTradeHandler(cfg.InventoryLocker, cfg.TradeExecutor)
 		r.Route("/matches/{matchId}/lock", func(r chi.Router) {
 			r.Use(
 				middleware.RateLimit(120, 60),
@@ -99,15 +100,15 @@ func NewRouter(cfg RouterConfig) chi.Router {
 			middleware.RequireAge13Plus(),
 		).Get("/ws", cfg.WSHandler.Upgrade)
 
-		// Future trade endpoints (Phase 3):
-		// r.With(
-		//     middleware.RateLimit(120, 60),
-		//     middleware.VerifyAttestation(cfg.AttestationVerifier, cfg.AttestationDisabled),
-		//     middleware.ValidateJWT(cfg.SupabaseURL, cfg.SupabaseSecret),
-		//     middleware.ReadDeviceIntegrity(),
-		//     middleware.RequireAge13Plus(),
-		//     middleware.TradeLimiter(middleware.DefaultTradeLimiterConfig()),
-		// ).Post("/trades", tradeHandler.Execute)
+		// Trade execution — atomic verify+transfer+audit
+		r.With(
+			middleware.RateLimit(120, 60),
+			middleware.VerifyAttestation(cfg.AttestationVerifier, cfg.AttestationDisabled),
+			middleware.ValidateJWT(cfg.SupabaseURL, cfg.SupabaseSecret),
+			middleware.ReadDeviceIntegrity(),
+			middleware.RequireAge13Plus(),
+			middleware.TradeLimiter(middleware.DefaultTradeLimiterConfig()),
+		).Post("/trades", tradeHandler.Execute)
 	})
 
 	return r

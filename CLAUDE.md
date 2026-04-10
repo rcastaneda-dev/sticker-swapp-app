@@ -101,7 +101,7 @@ sticker-swapp-app/
 │       ├── matchmaking/   # Scoring engine, in-memory cache
 │       ├── onesignal/     # Push notification sending (OneSignal REST API)
 │       ├── ws/            # WebSocket connection manager (goroutine-per-connection)
-│       └── trades/        # (reserved)
+│       └── trades/        # Inventory locking (InventoryLocker interface, DBInventoryLocker)
 ├── supabase/              # Migrations & Edge Functions
 │   ├── migrations/
 │   └── functions/
@@ -450,6 +450,8 @@ POST /api/v1/matches → mutual match (201) → async goroutine:
 | POST   | `/api/v1/ably/auth` | JWT    | Required    | 120/min    | Issue scoped Ably token        |
 | GET    | `/api/v1/matches`   | JWT    | Required    | 120/min    | Scored match discovery         |
 | POST   | `/api/v1/matches`   | JWT    | Required    | 120/min    | Create match (mutual swipe)    |
+| POST   | `/api/v1/matches/{matchId}/lock` | JWT | Required | 120/min | Lock caller's DUPLICATE stickers for trade |
+| DELETE | `/api/v1/matches/{matchId}/lock` | JWT | Required | 120/min | Release inventory locks (MANUAL_RELEASE) |
 | GET    | `/api/v1/ws`        | JWT    | None        | 30/min     | WebSocket upgrade (1 conn/user)|
 
 Rate limits: 120 req/min (authenticated), 30 req/min (guest). Returns 429 with `Retry-After: 60`.
@@ -497,6 +499,36 @@ Rate limits: 120 req/min (authenticated), 30 req/min (guest). Returns 429 with `
 - `go_service/internal/matches/db_matcher.go` — `DBMatchCreator` pgx implementation (tx + set_config + RPC)
 - `go_service/internal/api/matches.go` — `MatchHandler` with `CreateMatch` HTTP handler
 
+## Inventory Soft-Locks
+
+**Purpose:** Prevent the same DUPLICATE stickers from being offered in multiple concurrent trades. When a user opens a match chat, their DUPLICATE stickers are soft-locked for that match.
+
+**Endpoints:**
+- `POST /api/v1/matches/{matchId}/lock` — Lock caller's DUPLICATE stickers for this match (15-min TTL). Extends existing lock if already active.
+- `DELETE /api/v1/matches/{matchId}/lock` — Release locks with `MANUAL_RELEASE` reason.
+
+**Lock lifecycle:**
+1. User opens match screen → `POST .../lock` → advisory lock on match → `SELECT FOR UPDATE` on inventory → check conflicts with other active locks → insert `inventory_locks` row
+2. Re-opening chat before expiry → extends `expires_at` by 15 min
+3. Trade completes → Go service calls `release_inventory_locks(matchId, 'TRADE_COMPLETED')` (service_role)
+4. User leaves → `DELETE .../lock` → `release_inventory_locks(matchId, 'MANUAL_RELEASE')`
+5. Timeout → passive expiry (`expires_at > now()` check in queries)
+
+**Concurrency guarantees:**
+- `pg_advisory_xact_lock(hashtext(match_id))` — serializes concurrent lock attempts on the same match
+- `SELECT ... FOR UPDATE` on `user_inventory` rows — prevents concurrent inventory mutations during lock acquisition
+- Conflict check — stickers locked in another active match are rejected (`STICKERS_ALREADY_LOCKED`)
+
+**Response (POST lock):**
+- `200 OK` — `{success: true, sticker_ids: [int], lock_count: int, expires_at: string, extended: bool}`
+- `409 Conflict` — `{success: false, error: "STICKERS_ALREADY_LOCKED"|"NO_DUPLICATES"|"NOT_PARTICIPANT"|"MATCH_NOT_PENDING"|"MATCH_NOT_FOUND"}`
+
+**Key files:**
+- `supabase/migrations/0018_add_inventory_locks.sql` — Table + RPCs
+- `go_service/internal/trades/locker.go` — `InventoryLocker` interface, `LockResult`, `ReleaseResult`
+- `go_service/internal/trades/db_locker.go` — `DBInventoryLocker` pgx implementation
+- `go_service/internal/api/trades.go` — `TradeHandler` with `LockInventory` and `ReleaseInventory` handlers
+
 ## WebSocket Connection Manager
 
 **Endpoint:** `GET /api/v1/ws` — upgrades to WebSocket. Requires JWT auth + age 13+. No attestation (connection pipe only).
@@ -532,11 +564,12 @@ Rate limits: 120 req/min (authenticated), 30 req/min (guest). Returns 429 with `
 - `swipes` — Records individual right-swipes between users (swiper_id, target_id). UNIQUE (swiper_id, target_id) prevents duplicates and enables idempotent `ON CONFLICT DO NOTHING`. RLS read-only for own swipes; writes via SECURITY DEFINER RPC only.
 - `matches` — Created when both users swipe right on each other. UUID primary key (used in Ably channel names). Canonical ordering (`CHECK user1_id < user2_id`) with UNIQUE constraint prevents duplicate A↔B matches. Status: `match_status` enum (PENDING/ACCEPTED/COMPLETED/CANCELLED/EXPIRED). RLS read-only for participants; writes via `create_match_if_mutual()` SECURITY DEFINER RPC.
 - `wishlist_shares` — Shareable wishlist links for under-13 users (token, user_id, display_name snapshot, expires_at 30 days). Token: 64-char hex (32 random bytes). RLS: authenticated read own rows only. Writes via `create_wishlist_share()` SECURITY DEFINER RPC. Public lookup via `get_shared_wishlist(token)` (service_role only).
+- `inventory_locks` — Soft-locks on user DUPLICATE stickers during trades. One row per user per match (`UNIQUE match_id, user_id`). Stores `sticker_ids int[]`, `expires_at` (15-min TTL), `released_at`/`release_reason` (NULL while active). Rows never deleted (table = audit trail). Active lock: `released_at IS NULL AND expires_at > now()`. Advisory lock on `hashtext(match_id)` serializes concurrent lock attempts. `SELECT FOR UPDATE` on `user_inventory` prevents concurrent inventory mutations during lock acquisition. RLS: participants read own match locks; writes via SECURITY DEFINER RPCs only. Migration `0018`.
 
 **Planned tables (from PRD):**
 - `messages` — Chat message persistence
 
-All tables require RLS policies. The `trade_audit_log` is append-only. Migration `0007` includes a runtime audit that **fails the migration** if any public table lacks RLS. Migration `0009` adds `verify_age()` SECURITY DEFINER RPC and immutability trigger for age fields. Migration `0010` adds parental consent token management RPCs and extends the immutability trigger to protect consent fields. Migration `0011` adds `guest_migrations` table and `migrate_guest_inventory()` RPC for idempotent guest-to-member inventory transfer. Migration `0012` replaces the broad `user_locations` SELECT policy with `find_nearby_users()` SECURITY DEFINER RPC (50 km max radius, excludes under-13, excludes caller). Migration `0013` adds `find_nearby_traders()` SECURITY DEFINER RPC — returns top 50 nearby users who have DUPLICATE stickers, ordered by `<->` KNN distance; includes `display_name`, `duplicate_count`, `needed_count`. Migration `0014` adds `get_reciprocal_matches(p_nearby_ids uuid[])` SECURITY DEFINER RPC — given nearby user IDs from `find_nearby_traders()`, returns reciprocal matches by intersecting DUPLICATE/NEEDED inventories. Returns `user_id`, `they_have_i_need`, `i_have_they_need`, `match_score` (LEAST of the two counts). Array clamped to 50. Authenticated only. Migration `0015` modifies `find_nearby_traders()` to also return `location_updated_at` (from `user_locations.updated_at`) as an activity signal for the Go matchmaking scoring engine. Migration `0016` creates `swipes` table, `matches` table (with `match_status` enum), and `create_match_if_mutual(p_target_id uuid)` SECURITY DEFINER RPC — records a right-swipe, checks for mutual interest, and creates a PENDING match with canonical user ordering if both users have swiped. Idempotent via `ON CONFLICT DO NOTHING` on both tables. Granted to `authenticated` only. Migration `0017` creates `wishlist_shares` table, `create_wishlist_share()` RPC (authenticated, reuses non-expired tokens, generates 32-byte hex), and `get_shared_wishlist(p_token)` RPC (service_role only, returns needed stickers for shared wishlist page). Full policy matrix: [`docs/rls-policies.md`](docs/rls-policies.md).
+All tables require RLS policies. The `trade_audit_log` is append-only. Migration `0007` includes a runtime audit that **fails the migration** if any public table lacks RLS. Migration `0009` adds `verify_age()` SECURITY DEFINER RPC and immutability trigger for age fields. Migration `0010` adds parental consent token management RPCs and extends the immutability trigger to protect consent fields. Migration `0011` adds `guest_migrations` table and `migrate_guest_inventory()` RPC for idempotent guest-to-member inventory transfer. Migration `0012` replaces the broad `user_locations` SELECT policy with `find_nearby_users()` SECURITY DEFINER RPC (50 km max radius, excludes under-13, excludes caller). Migration `0013` adds `find_nearby_traders()` SECURITY DEFINER RPC — returns top 50 nearby users who have DUPLICATE stickers, ordered by `<->` KNN distance; includes `display_name`, `duplicate_count`, `needed_count`. Migration `0014` adds `get_reciprocal_matches(p_nearby_ids uuid[])` SECURITY DEFINER RPC — given nearby user IDs from `find_nearby_traders()`, returns reciprocal matches by intersecting DUPLICATE/NEEDED inventories. Returns `user_id`, `they_have_i_need`, `i_have_they_need`, `match_score` (LEAST of the two counts). Array clamped to 50. Authenticated only. Migration `0015` modifies `find_nearby_traders()` to also return `location_updated_at` (from `user_locations.updated_at`) as an activity signal for the Go matchmaking scoring engine. Migration `0016` creates `swipes` table, `matches` table (with `match_status` enum), and `create_match_if_mutual(p_target_id uuid)` SECURITY DEFINER RPC — records a right-swipe, checks for mutual interest, and creates a PENDING match with canonical user ordering if both users have swiped. Idempotent via `ON CONFLICT DO NOTHING` on both tables. Granted to `authenticated` only. Migration `0017` creates `wishlist_shares` table, `create_wishlist_share()` RPC (authenticated, reuses non-expired tokens, generates 32-byte hex), and `get_shared_wishlist(p_token)` RPC (service_role only, returns needed stickers for shared wishlist page). Migration `0018` creates `inventory_locks` table with `lock_release_reason` enum (EXPIRED/TRADE_COMPLETED/TRADE_CANCELLED/MANUAL_RELEASE), `lock_inventory_for_trade(p_match_id)` RPC (authenticated, advisory lock + SELECT FOR UPDATE + conflict check, 15-min TTL, extends existing locks), and `release_inventory_locks(p_match_id, p_reason)` RPC (service_role only, releases all active locks for both participants). Full policy matrix: [`docs/rls-policies.md`](docs/rls-policies.md).
 
 **Supabase Edge Functions:**
 - `send-consent-email` — Authenticated POST. Sends parental consent email (Resend API in prod, console log in dev). Called from Flutter after `request_parental_consent()` RPC.

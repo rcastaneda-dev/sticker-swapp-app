@@ -228,6 +228,36 @@ func TestLockInventory_NoDuplicates(t *testing.T) {
 	}
 }
 
+func TestLockInventory_StickersNotAvailable(t *testing.T) {
+	errMsg := "STICKERS_NOT_AVAILABLE"
+	locker := &mockInventoryLocker{
+		lockResult: &trades.LockResult{
+			Success: false,
+			Error:   &errMsg,
+		},
+	}
+	handler := newTestTradeHandler(locker, &mockTradeExecutor{})
+
+	req := newLockRequest("11111111-1111-1111-1111-111111111111", "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+	rec := httptest.NewRecorder()
+	handler.LockInventory(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d", rec.Code)
+	}
+
+	var result trades.LockResult
+	if err := json.NewDecoder(rec.Body).Decode(&result); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if result.Success {
+		t.Fatal("expected success to be false")
+	}
+	if result.Error == nil || *result.Error != "STICKERS_NOT_AVAILABLE" {
+		t.Fatalf("expected error STICKERS_NOT_AVAILABLE, got %v", result.Error)
+	}
+}
+
 func TestLockInventory_Unauthorized(t *testing.T) {
 	handler := newTestTradeHandler(&mockInventoryLocker{}, &mockTradeExecutor{})
 
@@ -596,6 +626,33 @@ func TestExecuteTrade_StickersNotInLock(t *testing.T) {
 	}
 	if result.Error == nil || *result.Error != "STICKERS_NOT_IN_LOCK" {
 		t.Fatalf("expected error STICKERS_NOT_IN_LOCK, got %v", result.Error)
+	}
+}
+
+func TestExecuteTrade_StickersNotReserved(t *testing.T) {
+	errMsg := "STICKERS_NOT_RESERVED"
+	executor := &mockTradeExecutor{
+		result: &trades.TradeResult{Success: false, Error: &errMsg},
+	}
+	handler := newTestTradeHandler(&mockInventoryLocker{}, executor)
+
+	req := newExecuteRequest(testUserID, validExecuteBody())
+	rec := httptest.NewRecorder()
+	handler.Execute(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d", rec.Code)
+	}
+
+	var result trades.TradeResult
+	if err := json.NewDecoder(rec.Body).Decode(&result); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if result.Success {
+		t.Fatal("expected success to be false")
+	}
+	if result.Error == nil || *result.Error != "STICKERS_NOT_RESERVED" {
+		t.Fatalf("expected error STICKERS_NOT_RESERVED, got %v", result.Error)
 	}
 }
 

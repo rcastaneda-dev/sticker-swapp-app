@@ -36,7 +36,8 @@ sticker-swapp-app/
 │   │   │       ├── device_integrity_http_client.dart # http.BaseClient with X-Device-Integrity header
 │   │   │       ├── location_service.dart              # Foreground GPS + user_locations upsert
 │   │   │       ├── pinned_http_client.dart           # http.BaseClient with pinning
-│   │   │       └── push_notification_service.dart
+│   │   │       ├── push_notification_service.dart
+│   │   │       └── replay_guard_http_client.dart     # http.BaseClient with nonce+timestamp+HMAC
 │   │   ├── features/      # Feature modules (auth, chat, matching, stickers)
 │   │   │   ├── auth/
 │   │   │   │   ├── data/
@@ -94,7 +95,7 @@ sticker-swapp-app/
 │       ├── api/           # HTTP handlers & routes
 │       ├── ably/          # Token generation (HMAC-signed) + REST SDK publisher
 │       ├── attestation/   # Play Integrity + App Attest verification
-│       ├── middleware/    # Auth, age gating, rate limiting, attestation, device integrity, trade limiting
+│       ├── middleware/    # Auth, age gating, rate limiting, attestation, device integrity, trade limiting, replay guard
 │       ├── db/            # pgx connection pool
 │       ├── auth/          # (reserved)
 │       ├── matches/       # Swipe & match creation (MatchCreator, ParticipantChecker interfaces)
@@ -131,7 +132,8 @@ cd flutter_app && flutter run \     # Run app (requires --dart-define for auth)
   --dart-define=SUPABASE_ANON_KEY=<your-key> \
   --dart-define=GOOGLE_WEB_CLIENT_ID=<web-client-id> \
   --dart-define=GOOGLE_IOS_CLIENT_ID=<ios-client-id> \
-  --dart-define=GO_SERVICE_URL=http://localhost:8080
+  --dart-define=GO_SERVICE_URL=http://localhost:8080 \
+  --dart-define=REPLAY_HMAC_SECRET=<your-hmac-secret>
 ```
 
 ## Architecture Decisions
@@ -444,16 +446,16 @@ POST /api/v1/matches → mutual match (201) → async goroutine:
 
 ## API Endpoints (Go Service)
 
-| Method | Path                | Auth   | Attestation | Rate Limit | Description                    |
-|--------|---------------------|--------|-------------|------------|--------------------------------|
-| GET    | `/healthz`          | None   | None        | None       | DB connectivity check          |
-| POST   | `/api/v1/ably/auth` | JWT    | Required    | 120/min    | Issue scoped Ably token        |
-| GET    | `/api/v1/matches`   | JWT    | Required    | 120/min    | Scored match discovery         |
-| POST   | `/api/v1/matches`   | JWT    | Required    | 120/min    | Create match (mutual swipe)    |
-| POST   | `/api/v1/matches/{matchId}/lock` | JWT | Required | 120/min | Lock caller's DUPLICATE stickers for trade |
-| DELETE | `/api/v1/matches/{matchId}/lock` | JWT | Required | 120/min | Release inventory locks (MANUAL_RELEASE) |
-| POST   | `/api/v1/trades`    | JWT    | Required    | 120/min + TradeLimiter | Atomic trade execution |
-| GET    | `/api/v1/ws`        | JWT    | None        | 30/min     | WebSocket upgrade (1 conn/user)|
+| Method | Path                | Auth   | Attestation | Replay Guard | Rate Limit | Description                    |
+|--------|---------------------|--------|-------------|--------------|------------|--------------------------------|
+| GET    | `/healthz`          | None   | None        | None         | None       | DB connectivity check          |
+| POST   | `/api/v1/ably/auth` | JWT    | Required    | Required     | 120/min    | Issue scoped Ably token        |
+| GET    | `/api/v1/matches`   | JWT    | Required    | Required     | 120/min    | Scored match discovery         |
+| POST   | `/api/v1/matches`   | JWT    | Required    | Required     | 120/min    | Create match (mutual swipe)    |
+| POST   | `/api/v1/matches/{matchId}/lock` | JWT | Required | Required | 120/min | Lock caller's DUPLICATE stickers for trade |
+| DELETE | `/api/v1/matches/{matchId}/lock` | JWT | Required | Required | 120/min | Release inventory locks (MANUAL_RELEASE) |
+| POST   | `/api/v1/trades`    | JWT    | Required    | Required     | 120/min + TradeLimiter | Atomic trade execution |
+| GET    | `/api/v1/ws`        | JWT    | None        | None         | 30/min     | WebSocket upgrade (1 conn/user)|
 
 Rate limits: 120 req/min (authenticated), 30 req/min (guest). Returns 429 with `Retry-After: 60`. Trade endpoint additionally uses `TradeLimiter` middleware (20/hour normal, 5/hour compromised devices).
 
@@ -619,12 +621,13 @@ Rate limits: 120 req/min (authenticated), 30 req/min (guest). Returns 429 with `
 - `swipes` — Records individual right-swipes between users (swiper_id, target_id). UNIQUE (swiper_id, target_id) prevents duplicates and enables idempotent `ON CONFLICT DO NOTHING`. RLS read-only for own swipes; writes via SECURITY DEFINER RPC only.
 - `matches` — Created when both users swipe right on each other. UUID primary key (used in Ably channel names). Canonical ordering (`CHECK user1_id < user2_id`) with UNIQUE constraint prevents duplicate A↔B matches. Status: `match_status` enum (PENDING/ACCEPTED/COMPLETED/CANCELLED/EXPIRED). RLS read-only for participants; writes via `create_match_if_mutual()` SECURITY DEFINER RPC.
 - `wishlist_shares` — Shareable wishlist links for under-13 users (token, user_id, display_name snapshot, expires_at 30 days). Token: 64-char hex (32 random bytes). RLS: authenticated read own rows only. Writes via `create_wishlist_share()` SECURITY DEFINER RPC. Public lookup via `get_shared_wishlist(token)` (service_role only).
+- `replay_nonces` — One-time-use nonces for replay attack prevention (nonce TEXT PK, created_at, expires_at with 7-min TTL). RLS enabled with no policies (Go service uses direct PG connection). Background cleanup goroutine deletes expired rows every 5 minutes. Migration `0021`.
 - `inventory_locks` — Soft-locks on user DUPLICATE stickers during trades. One row per user per match (`UNIQUE match_id, user_id`). Stores `sticker_ids int[]`, `expires_at` (15-min TTL), `released_at`/`release_reason` (NULL while active). Rows never deleted (table = audit trail). Active lock: `released_at IS NULL AND expires_at > now()`. Advisory lock on `hashtext(match_id)` serializes concurrent lock attempts. `SELECT FOR UPDATE` on `user_inventory` prevents concurrent inventory mutations during lock acquisition. RLS: participants read own match locks; writes via SECURITY DEFINER RPCs only. Migration `0018`.
 
 **Planned tables (from PRD):**
 - `messages` — Chat message persistence
 
-All tables require RLS policies. The `trade_audit_log` is append-only. Migration `0007` includes a runtime audit that **fails the migration** if any public table lacks RLS. Migration `0009` adds `verify_age()` SECURITY DEFINER RPC and immutability trigger for age fields. Migration `0010` adds parental consent token management RPCs and extends the immutability trigger to protect consent fields. Migration `0011` adds `guest_migrations` table and `migrate_guest_inventory()` RPC for idempotent guest-to-member inventory transfer. Migration `0012` replaces the broad `user_locations` SELECT policy with `find_nearby_users()` SECURITY DEFINER RPC (50 km max radius, excludes under-13, excludes caller). Migration `0013` adds `find_nearby_traders()` SECURITY DEFINER RPC — returns top 50 nearby users who have DUPLICATE stickers, ordered by `<->` KNN distance; includes `display_name`, `duplicate_count`, `needed_count`. Migration `0014` adds `get_reciprocal_matches(p_nearby_ids uuid[])` SECURITY DEFINER RPC — given nearby user IDs from `find_nearby_traders()`, returns reciprocal matches by intersecting DUPLICATE/NEEDED inventories. Returns `user_id`, `they_have_i_need`, `i_have_they_need`, `match_score` (LEAST of the two counts). Array clamped to 50. Authenticated only. Migration `0015` modifies `find_nearby_traders()` to also return `location_updated_at` (from `user_locations.updated_at`) as an activity signal for the Go matchmaking scoring engine. Migration `0016` creates `swipes` table, `matches` table (with `match_status` enum), and `create_match_if_mutual(p_target_id uuid)` SECURITY DEFINER RPC — records a right-swipe, checks for mutual interest, and creates a PENDING match with canonical user ordering if both users have swiped. Idempotent via `ON CONFLICT DO NOTHING` on both tables. Granted to `authenticated` only. Migration `0017` creates `wishlist_shares` table, `create_wishlist_share()` RPC (authenticated, reuses non-expired tokens, generates 32-byte hex), and `get_shared_wishlist(p_token)` RPC (service_role only, returns needed stickers for shared wishlist page). Migration `0018` creates `inventory_locks` table with `lock_release_reason` enum (EXPIRED/TRADE_COMPLETED/TRADE_CANCELLED/MANUAL_RELEASE), `lock_inventory_for_trade(p_match_id)` RPC (authenticated, advisory lock + SELECT FOR UPDATE + conflict check, 15-min TTL, extends existing locks), and `release_inventory_locks(p_match_id, p_reason)` RPC (service_role only, releases all active locks for both participants). Full policy matrix: [`docs/rls-policies.md`](docs/rls-policies.md). Migration `0019` creates `execute_trade(p_match_id, p_initiator_id, p_initiator_sticker_ids, p_responder_sticker_ids, p_idempotency_key)` SECURITY DEFINER RPC (service_role only) — atomic trade execution: idempotency check → match validation → advisory lock → verify active inventory locks → verify sticker subsets → SELECT FOR UPDATE on inventory → transfer stickers (DUPLICATE→OWNED sender, OWNED/DUPLICATE upsert recipient) → call `record_trade()` → update match to COMPLETED → call `release_inventory_locks(TRADE_COMPLETED)`. Idempotent by `p_idempotency_key`. Migration `0020` adds `trade_item_status` enum (AVAILABLE/RESERVED/TRADED) and `trade_status` column to `user_inventory` with CHECK constraint and BEFORE UPDATE trigger enforcing valid state transitions (blocks AVAILABLE→TRADED). Updates `lock_inventory_for_trade()` to set RESERVED and filter by AVAILABLE, `release_inventory_locks()` to reset AVAILABLE on released stickers, and `execute_trade()` to verify RESERVED and set TRADED during transfer.
+All tables require RLS policies. The `trade_audit_log` is append-only. Migration `0007` includes a runtime audit that **fails the migration** if any public table lacks RLS. Migration `0009` adds `verify_age()` SECURITY DEFINER RPC and immutability trigger for age fields. Migration `0010` adds parental consent token management RPCs and extends the immutability trigger to protect consent fields. Migration `0011` adds `guest_migrations` table and `migrate_guest_inventory()` RPC for idempotent guest-to-member inventory transfer. Migration `0012` replaces the broad `user_locations` SELECT policy with `find_nearby_users()` SECURITY DEFINER RPC (50 km max radius, excludes under-13, excludes caller). Migration `0013` adds `find_nearby_traders()` SECURITY DEFINER RPC — returns top 50 nearby users who have DUPLICATE stickers, ordered by `<->` KNN distance; includes `display_name`, `duplicate_count`, `needed_count`. Migration `0014` adds `get_reciprocal_matches(p_nearby_ids uuid[])` SECURITY DEFINER RPC — given nearby user IDs from `find_nearby_traders()`, returns reciprocal matches by intersecting DUPLICATE/NEEDED inventories. Returns `user_id`, `they_have_i_need`, `i_have_they_need`, `match_score` (LEAST of the two counts). Array clamped to 50. Authenticated only. Migration `0015` modifies `find_nearby_traders()` to also return `location_updated_at` (from `user_locations.updated_at`) as an activity signal for the Go matchmaking scoring engine. Migration `0016` creates `swipes` table, `matches` table (with `match_status` enum), and `create_match_if_mutual(p_target_id uuid)` SECURITY DEFINER RPC — records a right-swipe, checks for mutual interest, and creates a PENDING match with canonical user ordering if both users have swiped. Idempotent via `ON CONFLICT DO NOTHING` on both tables. Granted to `authenticated` only. Migration `0017` creates `wishlist_shares` table, `create_wishlist_share()` RPC (authenticated, reuses non-expired tokens, generates 32-byte hex), and `get_shared_wishlist(p_token)` RPC (service_role only, returns needed stickers for shared wishlist page). Migration `0018` creates `inventory_locks` table with `lock_release_reason` enum (EXPIRED/TRADE_COMPLETED/TRADE_CANCELLED/MANUAL_RELEASE), `lock_inventory_for_trade(p_match_id)` RPC (authenticated, advisory lock + SELECT FOR UPDATE + conflict check, 15-min TTL, extends existing locks), and `release_inventory_locks(p_match_id, p_reason)` RPC (service_role only, releases all active locks for both participants). Full policy matrix: [`docs/rls-policies.md`](docs/rls-policies.md). Migration `0019` creates `execute_trade(p_match_id, p_initiator_id, p_initiator_sticker_ids, p_responder_sticker_ids, p_idempotency_key)` SECURITY DEFINER RPC (service_role only) — atomic trade execution: idempotency check → match validation → advisory lock → verify active inventory locks → verify sticker subsets → SELECT FOR UPDATE on inventory → transfer stickers (DUPLICATE→OWNED sender, OWNED/DUPLICATE upsert recipient) → call `record_trade()` → update match to COMPLETED → call `release_inventory_locks(TRADE_COMPLETED)`. Idempotent by `p_idempotency_key`. Migration `0020` adds `trade_item_status` enum (AVAILABLE/RESERVED/TRADED) and `trade_status` column to `user_inventory` with CHECK constraint and BEFORE UPDATE trigger enforcing valid state transitions (blocks AVAILABLE→TRADED). Updates `lock_inventory_for_trade()` to set RESERVED and filter by AVAILABLE, `release_inventory_locks()` to reset AVAILABLE on released stickers, and `execute_trade()` to verify RESERVED and set TRADED during transfer. Migration `0021` creates `replay_nonces` table (nonce TEXT PK, created_at, expires_at) with index on `expires_at` for cleanup. RLS enabled with no policies (Go service uses direct PG connection). Used by `ReplayGuard` middleware for one-time nonce consumption via `INSERT ON CONFLICT DO NOTHING`.
 
 **Supabase Edge Functions:**
 - `send-consent-email` — Authenticated POST. Sends parental consent email (Resend API in prod, console log in dev). Called from Flutter after `request_parental_consent()` RPC.
@@ -669,6 +672,8 @@ APPLE_APP_ID                              # App Attest verification, format: TEA
 ATTESTATION_DISABLED                      # Set to "true" to bypass attestation in dev (Go .env)
 GO_SERVICE_URL                            # Go matchmaking backend URL (--dart-define, e.g. http://localhost:8080)
 ONESIGNAL_REST_API_KEY                    # OneSignal REST API Key for server-side push (Go .env, never in client)
+REPLAY_HMAC_SECRET                        # Shared HMAC key for replay attack prevention (Go .env + --dart-define)
+REPLAY_GUARD_DISABLED                     # Set to "true" to bypass replay guard in dev (Go .env)
 ```
 
 Deployment secrets (GitHub Actions): `APPSTORE_CONNECT_*`, `PLAY_SERVICE_ACCOUNT_JSON`, `ANDROID_KEYSTORE*`, `IOS_CERTIFICATE*`, `PROVISIONING_PROFILE`, `GOOGLE_WEB_CLIENT_ID`, `GOOGLE_IOS_CLIENT_ID`.
@@ -754,7 +759,7 @@ make docker-run     # Run with .env
 - Certificate pinning on all API calls (see Certificate Pinning section below)
 - App attestation — Play Integrity (Android) + App Attest (iOS) (see App Attestation section below)
 - Root/jailbreak detection with reduced trade limits (see Root/Jailbreak Detection section below)
-- Replay prevention (nonces)
+- Replay attack prevention — every attested request includes `X-Nonce` (32-char hex, one-time-use), `X-Timestamp` (±3 min window), and `X-Signature` (HMAC-SHA256 of `method:path:timestamp:nonce`). Consumed nonces stored in PostgreSQL `replay_nonces` table with 7-minute TTL. Background cleanup every 5 minutes. Disabled via `REPLAY_GUARD_DISABLED=true`.
 - RLS on all Supabase tables
 - OWASP Mobile Top 10 compliance
 - Trade idempotency keys to prevent replay attacks
@@ -776,7 +781,7 @@ make docker-run     # Run with .env
 - `flutter_app/lib/core/services/certificate_pinner.dart` — `CertificatePins` (pin store), `CertificatePinner` (validation + SPKI extraction), `CertificatePinningException`
 - `flutter_app/lib/core/services/pinned_http_client.dart` — `PinnedHttpClient extends http.BaseClient`
 - `flutter_app/android/app/src/main/res/xml/network_security_config.xml` — Android pin declarations
-- `flutter_app/lib/main.dart` — wires `AttestedHttpClient` → `DeviceIntegrityHttpClient` → `PinnedHttpClient` into `Supabase.initialize(httpClient:)`, skipped on web (`kIsWeb`)
+- `flutter_app/lib/main.dart` — wires `AttestedHttpClient` → `ReplayGuardHttpClient` → `DeviceIntegrityHttpClient` → `PinnedHttpClient` into `Supabase.initialize(httpClient:)`, skipped on web (`kIsWeb`)
 
 **Updating pins:** Extract SPKI hash with:
 ```bash
@@ -806,9 +811,9 @@ Go backend (VerifyAttestation middleware)
   4. Reject 403 ATTESTATION_FAILED if invalid
 ```
 
-**Middleware chain order:** `RateLimit → VerifyAttestation → ValidateJWT → ReadDeviceIntegrity → RequireAge13Plus`
+**Middleware chain order:** `RateLimit → VerifyAttestation → ReplayGuard → ValidateJWT → ReadDeviceIntegrity → RequireAge13Plus`
 
-**Flutter HTTP client chain:** `AttestedHttpClient → DeviceIntegrityHttpClient → PinnedHttpClient → http.Client()`
+**Flutter HTTP client chain:** `AttestedHttpClient → ReplayGuardHttpClient → DeviceIntegrityHttpClient → PinnedHttpClient → http.Client()`
 
 **Android verification:** Go calls Google's `playintegrity.googleapis.com/v1/{projectNumber}:decodeIntegrityToken` endpoint. Requires `appRecognitionVerdict == "PLAY_RECOGNIZED"` and `deviceRecognitionVerdict` containing `"MEETS_DEVICE_INTEGRITY"`.
 
@@ -841,6 +846,31 @@ Returns 429 `TRADE_LIMIT_EXCEEDED` with `Retry-After` when exceeded.
 - `flutter_app/lib/core/services/device_integrity_http_client.dart` — `DeviceIntegrityHttpClient extends http.BaseClient`
 - `go_service/internal/middleware/device_integrity.go` — `ReadDeviceIntegrity` middleware
 - `go_service/internal/middleware/trade_limiter.go` — `TradeLimiter` middleware with `TradeLimiterConfig`
+
+## Replay Attack Prevention
+
+**Method:** Nonce + timestamp (±3 min) + HMAC-SHA256 signature on all attested endpoints. Prevents intercepted requests from being retransmitted.
+
+**Client headers (generated by `ReplayGuardHttpClient`):**
+- `X-Nonce`: 32-char hex string (16 random bytes, unique per request)
+- `X-Timestamp`: Unix epoch seconds
+- `X-Signature`: hex-encoded HMAC-SHA256 of `"METHOD:PATH:TIMESTAMP:NONCE"` using shared `REPLAY_HMAC_SECRET`
+
+**Server-side validation (`ReplayGuard` middleware):**
+1. Verify all three headers present → 400 `REPLAY_HEADERS_MISSING`
+2. Validate nonce format (32-char hex) → 400 `REPLAY_INVALID_NONCE`
+3. Check timestamp within ±3 minutes → 409 `REPLAY_TIMESTAMP_EXPIRED`
+4. Verify HMAC-SHA256 signature (constant-time comparison) → 409 `REPLAY_INVALID_SIGNATURE`
+5. Atomic nonce consume via `INSERT ON CONFLICT DO NOTHING` → 409 `REPLAY_DETECTED` if already used
+
+**Nonce storage:** PostgreSQL `replay_nonces` table (nonce TEXT PK, expires_at). 7-minute TTL (covers ±3 min window with margin). Background cleanup goroutine runs every 5 minutes. `NonceStore` interface allows swapping PG for Redis without middleware changes.
+
+**Dev mode:** Set `REPLAY_GUARD_DISABLED=true` in `.env` to bypass (pattern matches `ATTESTATION_DISABLED`). `REPLAY_HMAC_SECRET` is required when enabled.
+
+**Key files:**
+- `flutter_app/lib/core/services/replay_guard_http_client.dart` — `ReplayGuardHttpClient extends http.BaseClient`
+- `go_service/internal/middleware/replay_guard.go` — `NonceStore` interface, `PGNonceStore`, `ReplayGuard` middleware
+- `supabase/migrations/0021_add_replay_nonces.sql` — Nonce table + index
 
 ## Design System
 

@@ -16,6 +16,7 @@ import (
 	"github.com/wc2026-stickers/sticker-swap-app/go_service/internal/db"
 	"github.com/wc2026-stickers/sticker-swap-app/go_service/internal/matches"
 	"github.com/wc2026-stickers/sticker-swap-app/go_service/internal/matchmaking"
+	"github.com/wc2026-stickers/sticker-swap-app/go_service/internal/middleware"
 	"github.com/wc2026-stickers/sticker-swap-app/go_service/internal/onesignal"
 	"github.com/wc2026-stickers/sticker-swap-app/go_service/internal/trades"
 	"github.com/wc2026-stickers/sticker-swap-app/go_service/internal/ws"
@@ -98,6 +99,16 @@ func main() {
 		log.Println("Ably REST publisher enabled")
 	}
 
+	// Replay attack prevention — optional disable for dev
+	replayHMACSecret := os.Getenv("REPLAY_HMAC_SECRET")
+	replayGuardDisabled := strings.EqualFold(os.Getenv("REPLAY_GUARD_DISABLED"), "true")
+	if replayGuardDisabled {
+		log.Println("WARNING: Replay guard is DISABLED (dev mode)")
+	} else if replayHMACSecret == "" {
+		log.Fatal("REPLAY_HMAC_SECRET is required when replay guard is enabled")
+	}
+	nonceStore := middleware.NewPGNonceStore(pool)
+
 	// Initialize WebSocket connection manager
 	wsCfg := ws.DefaultConfig()
 	wsManager := ws.NewManager(wsCfg)
@@ -110,6 +121,9 @@ func main() {
 		SupabaseSecret:      ablyCfg.SupabaseSecret,
 		AttestationVerifier: attVerifier,
 		AttestationDisabled: attestationDisabled,
+		NonceStore:          nonceStore,
+		ReplayHMACSecret:    replayHMACSecret,
+		ReplayGuardDisabled: replayGuardDisabled,
 		Scorer:              matchScorer,
 		MatchCache:          matchCache,
 		WSHandler:           wsHandler,

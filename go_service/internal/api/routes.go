@@ -23,6 +23,9 @@ type RouterConfig struct {
 	SupabaseSecret       string
 	AttestationVerifier  attestation.IntegrityChecker
 	AttestationDisabled  bool
+	NonceStore           middleware.NonceStore
+	ReplayHMACSecret     string
+	ReplayGuardDisabled  bool
 	Scorer               matchmaking.Scorer
 	MatchCache           *matchmaking.Cache
 	WSHandler            *ws.Handler
@@ -48,12 +51,17 @@ func NewRouter(cfg RouterConfig) chi.Router {
 	health := NewHealthHandler(cfg.Pool)
 	r.Get("/healthz", health.Check)
 
+	// Build replay guard config once for all attested routes.
+	replayCfg := middleware.DefaultReplayGuardConfig()
+	replayCfg.HMACSecret = cfg.ReplayHMACSecret
+
 	// Ably token auth — with full middleware chain
-	// Order: RateLimit → VerifyAttestation → ValidateJWT → ReadDeviceIntegrity → RequireAge13Plus
+	// Order: RateLimit → VerifyAttestation → ReplayGuard → ValidateJWT → ReadDeviceIntegrity → RequireAge13Plus
 	r.Route("/api/v1", func(r chi.Router) {
 		r.With(
 			middleware.RateLimit(120, 60),
 			middleware.VerifyAttestation(cfg.AttestationVerifier, cfg.AttestationDisabled),
+			middleware.ReplayGuard(cfg.NonceStore, replayCfg, cfg.ReplayGuardDisabled),
 			middleware.ValidateJWT(cfg.SupabaseURL, cfg.SupabaseSecret),
 			middleware.ReadDeviceIntegrity(),
 			middleware.RequireAge13Plus(),
@@ -64,6 +72,7 @@ func NewRouter(cfg RouterConfig) chi.Router {
 		r.With(
 			middleware.RateLimit(120, 60),
 			middleware.VerifyAttestation(cfg.AttestationVerifier, cfg.AttestationDisabled),
+			middleware.ReplayGuard(cfg.NonceStore, replayCfg, cfg.ReplayGuardDisabled),
 			middleware.ValidateJWT(cfg.SupabaseURL, cfg.SupabaseSecret),
 			middleware.ReadDeviceIntegrity(),
 			middleware.RequireAge13Plus(),
@@ -74,6 +83,7 @@ func NewRouter(cfg RouterConfig) chi.Router {
 		r.With(
 			middleware.RateLimit(120, 60),
 			middleware.VerifyAttestation(cfg.AttestationVerifier, cfg.AttestationDisabled),
+			middleware.ReplayGuard(cfg.NonceStore, replayCfg, cfg.ReplayGuardDisabled),
 			middleware.ValidateJWT(cfg.SupabaseURL, cfg.SupabaseSecret),
 			middleware.ReadDeviceIntegrity(),
 			middleware.RequireAge13Plus(),
@@ -85,6 +95,7 @@ func NewRouter(cfg RouterConfig) chi.Router {
 			r.Use(
 				middleware.RateLimit(120, 60),
 				middleware.VerifyAttestation(cfg.AttestationVerifier, cfg.AttestationDisabled),
+				middleware.ReplayGuard(cfg.NonceStore, replayCfg, cfg.ReplayGuardDisabled),
 				middleware.ValidateJWT(cfg.SupabaseURL, cfg.SupabaseSecret),
 				middleware.ReadDeviceIntegrity(),
 				middleware.RequireAge13Plus(),
@@ -93,7 +104,7 @@ func NewRouter(cfg RouterConfig) chi.Router {
 			r.Delete("/", tradeHandler.ReleaseInventory)
 		})
 
-		// WebSocket — JWT + age gate, no attestation (connection pipe only)
+		// WebSocket — JWT + age gate, no attestation or replay guard (connection pipe only)
 		r.With(
 			middleware.RateLimit(30, 60),
 			middleware.ValidateJWT(cfg.SupabaseURL, cfg.SupabaseSecret),
@@ -104,6 +115,7 @@ func NewRouter(cfg RouterConfig) chi.Router {
 		r.With(
 			middleware.RateLimit(120, 60),
 			middleware.VerifyAttestation(cfg.AttestationVerifier, cfg.AttestationDisabled),
+			middleware.ReplayGuard(cfg.NonceStore, replayCfg, cfg.ReplayGuardDisabled),
 			middleware.ValidateJWT(cfg.SupabaseURL, cfg.SupabaseSecret),
 			middleware.ReadDeviceIntegrity(),
 			middleware.RequireAge13Plus(),

@@ -10,6 +10,7 @@ import 'package:flutter_app/core/services/device_integrity_http_client.dart';
 import 'package:flutter_app/core/services/device_integrity_service.dart';
 import 'package:flutter_app/core/services/pinned_http_client.dart';
 import 'package:flutter_app/core/services/push_notification_service.dart';
+import 'package:flutter_app/core/services/replay_guard_http_client.dart';
 import 'package:flutter_app/core/providers/push_notification_providers.dart';
 import 'package:flutter_app/features/stickers/data/services/guest_storage_service.dart';
 import 'package:flutter_app/app.dart';
@@ -18,7 +19,7 @@ void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
   // Security client chain — dart:io only, skip on web.
-  // AttestedHttpClient → DeviceIntegrityHttpClient → PinnedHttpClient → http.Client()
+  // AttestedHttpClient → ReplayGuardHttpClient → DeviceIntegrityHttpClient → PinnedHttpClient → http.Client()
   http.Client? httpClient;
   if (!kIsWeb) {
     const gcpProjectNumber = int.fromEnvironment(
@@ -38,7 +39,14 @@ void main() async {
       deviceIntegrity,
     );
 
-    httpClient = AttestedHttpClient(integrityClient, attestation);
+    // Replay attack prevention — nonce + timestamp + HMAC-SHA256.
+    const replayHmacSecret = String.fromEnvironment('REPLAY_HMAC_SECRET');
+    final replayGuardClient = ReplayGuardHttpClient(
+      integrityClient,
+      replayHmacSecret,
+    );
+
+    httpClient = AttestedHttpClient(replayGuardClient, attestation);
   }
 
   await Supabase.initialize(

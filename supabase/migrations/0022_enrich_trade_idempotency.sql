@@ -16,8 +16,12 @@ ALTER TABLE trade_audit_log
 
 CREATE INDEX idx_trade_audit_match ON trade_audit_log (match_id);
 
--- 2. Update record_trade() to accept match_id
-CREATE OR REPLACE FUNCTION record_trade(
+-- 2. Replace record_trade() with new signature that includes match_id.
+--    Drop the old 6-param overload first (CASCADE is safe — execute_trade()
+--    is recreated below in this same migration).
+DROP FUNCTION IF EXISTS record_trade(uuid, uuid, int[], int[], trade_status, uuid);
+
+CREATE FUNCTION record_trade(
   p_initiator_id         uuid,
   p_responder_id         uuid,
   p_initiator_sticker_ids int[],
@@ -59,11 +63,11 @@ BEGIN
 END;
 $$;
 
--- Permissions unchanged
-REVOKE EXECUTE ON FUNCTION record_trade FROM public;
-REVOKE EXECUTE ON FUNCTION record_trade FROM anon;
-REVOKE EXECUTE ON FUNCTION record_trade FROM authenticated;
-GRANT EXECUTE ON FUNCTION record_trade TO service_role;
+-- Permissions: service_role only (matches original migration 0006)
+REVOKE EXECUTE ON FUNCTION record_trade(uuid, uuid, int[], int[], trade_status, uuid, uuid) FROM public;
+REVOKE EXECUTE ON FUNCTION record_trade(uuid, uuid, int[], int[], trade_status, uuid, uuid) FROM anon;
+REVOKE EXECUTE ON FUNCTION record_trade(uuid, uuid, int[], int[], trade_status, uuid, uuid) FROM authenticated;
+GRANT EXECUTE ON FUNCTION record_trade(uuid, uuid, int[], int[], trade_status, uuid, uuid) TO service_role;
 
 -- 3. Update execute_trade() with enriched idempotency response
 CREATE OR REPLACE FUNCTION execute_trade(

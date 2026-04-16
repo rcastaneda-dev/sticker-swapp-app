@@ -60,6 +60,16 @@ The Go matchmaking engine queries via `service_role` which bypasses RLS.
 
 **Notes:** Append-only. Writes are exclusively through the `record_trade()` SECURITY DEFINER function, which is only granted to `service_role`. Direct INSERT/UPDATE/DELETE are blocked for all client roles.
 
+### `messages`
+| Operation | Policy Name | Rule | Role |
+|-----------|-------------|------|------|
+| SELECT | `match_participants_read_messages` | `EXISTS (SELECT 1 FROM matches WHERE matches.id = messages.match_id AND auth.uid() IN (matches.user1_id, matches.user2_id))` | `authenticated` |
+| INSERT | — | Blocked by RLS (no policy) | — |
+| UPDATE | — | Blocked by RLS (no policy) | — |
+| DELETE | — | Blocked by RLS (no policy) | — |
+
+**Notes:** Append-only (from the client perspective). Writes are exclusively through the `insert_message()` SECURITY DEFINER function, which is only granted to `service_role` (called by `ably-webhook` Edge Function). Idempotent via `ably_message_id` UNIQUE constraint with `ON CONFLICT DO NOTHING`. The SELECT policy checks match participation via a subquery on the `matches` table.
+
 ## Audit Mechanism
 
 Migration `0007_enable_rls_user_locations.sql` includes a `DO` block that queries `pg_class.relrowsecurity` for all public tables (excluding PostGIS system tables). If any table lacks RLS, the migration **fails** with:

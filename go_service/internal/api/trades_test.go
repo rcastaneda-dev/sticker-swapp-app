@@ -512,6 +512,28 @@ func TestExecuteTrade_AlreadyCompleted(t *testing.T) {
 	if !result.AlreadyCompleted {
 		t.Fatal("expected already_completed to be true")
 	}
+	// Idempotent replay must return the full response (same as first execution)
+	if result.TradeID == nil || *result.TradeID != testTradeID {
+		t.Fatalf("expected trade_id %q, got %v", testTradeID, result.TradeID)
+	}
+	if result.MatchID == nil || *result.MatchID != testMatchID {
+		t.Fatalf("expected match_id %q, got %v", testMatchID, result.MatchID)
+	}
+	if result.InitiatorID == nil || *result.InitiatorID != testUserID {
+		t.Fatalf("expected initiator_id %q, got %v", testUserID, result.InitiatorID)
+	}
+	if result.ResponderID == nil || *result.ResponderID != testResponderID {
+		t.Fatalf("expected responder_id %q, got %v", testResponderID, result.ResponderID)
+	}
+	if len(result.InitiatorStickerIDs) != 3 {
+		t.Fatalf("expected 3 initiator stickers, got %d", len(result.InitiatorStickerIDs))
+	}
+	if len(result.ResponderStickerIDs) != 2 {
+		t.Fatalf("expected 2 responder stickers, got %d", len(result.ResponderStickerIDs))
+	}
+	if result.Status == nil || *result.Status != testStatus {
+		t.Fatalf("expected status %q, got %v", testStatus, result.Status)
+	}
 }
 
 func TestExecuteTrade_MatchNotFound(t *testing.T) {

@@ -15,6 +15,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'package:ably_flutter/ably_flutter.dart' as ably;
 import 'package:flutter/foundation.dart';
+import 'package:http/http.dart' as http;
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 /// Configuration for the Ably service.
@@ -22,15 +23,7 @@ class AblyConfig {
   /// Base URL of the Go trading engine (e.g., "https://api.stickerstadium.app")
   final String tradingEngineBaseUrl;
 
-  /// Ably client options key — only the app ID portion, NOT the secret.
-  /// Used by the Ably SDK to identify which app to connect to.
-  /// Example: "appId" (just the part before the dot in your API key)
-  final String ablyAppId;
-
-  const AblyConfig({
-    required this.tradingEngineBaseUrl,
-    required this.ablyAppId,
-  });
+  const AblyConfig({required this.tradingEngineBaseUrl});
 }
 
 /// Message received from an Ably channel.
@@ -40,7 +33,7 @@ class ChatMessage {
   final DateTime timestamp;
   final String? matchId;
 
-  ChatMessage({
+  const ChatMessage({
     required this.senderId,
     required this.body,
     required this.timestamp,
@@ -48,20 +41,34 @@ class ChatMessage {
   });
 
   factory ChatMessage.fromAbly(ably.Message msg) {
-    final data = msg.data is String ? jsonDecode(msg.data as String) : msg.data;
+    String body;
+    if (msg.data is String) {
+      try {
+        final decoded = jsonDecode(msg.data as String);
+        if (decoded is Map) {
+          body = (decoded['text'] as String?) ??
+              (decoded['body'] as String?) ??
+              '';
+        } else {
+          body = decoded.toString();
+        }
+      } catch (_) {
+        body = msg.data as String;
+      }
+    } else if (msg.data is Map) {
+      body = (msg.data as Map)['text'] as String? ??
+          (msg.data as Map)['body'] as String? ??
+          '';
+    } else {
+      body = msg.data?.toString() ?? '';
+    }
+
     return ChatMessage(
-      senderId: data['senderId'] ?? msg.clientId ?? 'unknown',
-      body: data['body'] ?? '',
+      senderId: msg.clientId ?? 'unknown',
+      body: body,
       timestamp: msg.timestamp ?? DateTime.now(),
-      matchId: data['matchId'],
     );
   }
-
-  Map<String, dynamic> toJson() => {
-    'senderId': senderId,
-    'body': body,
-    'matchId': matchId,
-  };
 }
 
 /// Manages the Ably real-time connection and chat channels.
@@ -70,7 +77,6 @@ class ChatMessage {
 /// ```dart
 /// final ablyService = AblyService(config: AblyConfig(
 ///   tradingEngineBaseUrl: 'https://api.stickerstadium.app',
-///   ablyAppId: 'your-app-id',
 /// ));
 ///
 /// await ablyService.connect();
@@ -80,15 +86,34 @@ class ChatMessage {
 /// ```
 class AblyService {
   final AblyConfig config;
+  final SupabaseClient? _injectedClient;
+  final http.Client? _injectedHttpClient;
 
   ably.Realtime? _client;
   final Map<String, ably.RealtimeChannel> _channels = {};
   final Map<String, StreamController<ChatMessage>> _messageControllers = {};
 
   /// Whether the service is currently connected to Ably.
-  bool get isConnected => _client?.connection.state == ably.ConnectionState.connected;
+  bool get isConnected =>
+      _client?.connection.state == ably.ConnectionState.connected;
 
-  AblyService({required this.config});
+  /// Stream of connection state changes.
+  Stream<ably.ConnectionStateChange>? get connectionStateStream =>
+      _client?.connection.on();
+
+  /// Current connection state, or null if not initialized.
+  ably.ConnectionState? get connectionState => _client?.connection.state;
+
+  AblyService({
+    required this.config,
+    SupabaseClient? supabaseClient,
+    http.Client? httpClient,
+  })  : _injectedClient = supabaseClient,
+        _injectedHttpClient = httpClient;
+
+  SupabaseClient get _supabase => _injectedClient ?? Supabase.instance.client;
+
+  http.Client get _http => _injectedHttpClient ?? http.Client();
 
   /// Establishes the Ably connection using token authentication.
   ///
@@ -97,8 +122,7 @@ class AblyService {
   /// token's capabilities to only the channels this user is authorized
   /// to access.
   Future<void> connect() async {
-    final supabase = Supabase.instance.client;
-    final session = supabase.auth.currentSession;
+    final session = _supabase.auth.currentSession;
 
     if (session == null) {
       throw StateError('User must be authenticated before connecting to Ably');
@@ -148,17 +172,19 @@ class AblyService {
     }
 
     // Request a token scoped to this specific match channel
-    // (the Go service adds this channel to the capability)
     await _requestTokenForMatch(matchId);
 
     final channel = _client!.channels.get(channelName);
     _channels[channelName] = channel;
 
+    // Attach first
+    await channel.attach();
+
     final controller = StreamController<ChatMessage>.broadcast();
     _messageControllers[channelName] = controller;
 
-    // Subscribe to incoming messages
-    channel.subscribe().listen((msg) {
+    // Subscribe to chat messages only (filter out system events like match.created)
+    channel.subscribe(name: 'chat.message').listen((msg) {
       try {
         controller.add(ChatMessage.fromAbly(msg));
       } catch (e) {
@@ -167,10 +193,7 @@ class AblyService {
     });
 
     // Enter presence to show online status
-    await channel.presence.enter({'status': 'online'});
-
-    // Attach to the channel
-    await channel.attach();
+    await channel.presence.enter({'status': 'online', 'isTyping': false});
 
     return controller.stream;
   }
@@ -178,27 +201,60 @@ class AblyService {
   /// Sends a chat message on a match channel.
   ///
   /// The message is published to Ably, which routes it to the other
-  /// participant. A copy is also written to PostgreSQL via the Go service
-  /// for audit purposes (PRD §4.4 — messages table).
+  /// participant. The Ably webhook persists it to PostgreSQL via
+  /// the `insert_message()` RPC.
   Future<void> sendMessage(String matchId, String body) async {
     final channelName = 'match:$matchId';
     final channel = _channels[channelName];
 
     if (channel == null) {
-      throw StateError('Not connected to match channel: $matchId. Call joinMatchChannel first.');
+      throw StateError(
+          'Not connected to match channel: $matchId. Call joinMatchChannel first.');
     }
 
-    final session = Supabase.instance.client.auth.currentSession;
-
     await channel.publish(
-      name: 'chat',
-      data: jsonEncode({
-        'senderId': session?.user.id,
-        'body': body,
-        'matchId': matchId,
-        'timestamp': DateTime.now().toIso8601String(),
-      }),
+      name: 'chat.message',
+      data: jsonEncode({'text': body}),
     );
+  }
+
+  /// Fetch recent message history for a channel (up to 24h, Ably-configured).
+  /// Returns messages in chronological order (oldest first).
+  Future<List<ChatMessage>> getHistory(String matchId,
+      {int limit = 50}) async {
+    final channelName = 'match:$matchId';
+    final channel =
+        _channels[channelName] ?? _client!.channels.get(channelName);
+
+    final resultPage = await channel.history(
+      ably.RealtimeHistoryParams(direction: 'backwards', limit: limit),
+    );
+
+    return resultPage.items
+        .where((msg) => msg.name == 'chat.message')
+        .map((msg) => ChatMessage.fromAbly(msg))
+        .toList()
+        .reversed
+        .toList();
+  }
+
+  /// Update presence data to signal typing state.
+  Future<void> setTyping(String matchId, bool isTyping) async {
+    final channelName = 'match:$matchId';
+    final channel = _channels[channelName];
+    if (channel == null) return;
+
+    await channel.presence.update({
+      'status': 'online',
+      'isTyping': isTyping,
+    });
+  }
+
+  /// Subscribe to presence events on a match channel.
+  Stream<ably.PresenceMessage>? getPresenceStream(String matchId) {
+    final channelName = 'match:$matchId';
+    final channel = _channels[channelName];
+    return channel?.presence.subscribe();
   }
 
   /// Gets the list of currently present users on a match channel.
@@ -230,7 +286,7 @@ class AblyService {
   /// This channel receives server-pushed events like new match alerts
   /// and trade confirmations. It's subscribe-only (the Go service publishes).
   Stream<Map<String, dynamic>> subscribeToNotifications() {
-    final session = Supabase.instance.client.auth.currentSession;
+    final session = _supabase.auth.currentSession;
     if (session == null) {
       throw StateError('User must be authenticated');
     }
@@ -278,42 +334,29 @@ class AblyService {
 
   /// Requests a signed Ably token from the Go trading engine.
   Future<ably.TokenRequest> _requestToken({String? matchId}) async {
-    final supabase = Supabase.instance.client;
-    final session = supabase.auth.currentSession;
+    final session = _supabase.auth.currentSession;
 
     if (session == null) {
       throw StateError('No active session');
     }
 
-    final uri = Uri.parse('${config.tradingEngineBaseUrl}/api/v1/ably/auth');
+    final uri =
+        Uri.parse('${config.tradingEngineBaseUrl}/api/v1/ably/auth');
 
-    final response = await supabase.functions.invoke(
-      'proxy', // Or use direct HTTP if not proxying through Edge Functions
-      body: {
-        'url': uri.toString(),
-        'method': 'POST',
-        'headers': {
-          'Authorization': 'Bearer ${session.accessToken}',
-          'Content-Type': 'application/json',
-        },
-        'body': matchId != null ? {'matchId': matchId} : {},
+    final response = await _http.post(
+      uri,
+      headers: {
+        'Authorization': 'Bearer ${session.accessToken}',
+        'Content-Type': 'application/json',
       },
+      body: matchId != null ? jsonEncode({'matchId': matchId}) : null,
     );
 
-    // For direct HTTP (recommended for production):
-    // final httpResponse = await http.post(
-    //   uri,
-    //   headers: {
-    //     'Authorization': 'Bearer ${session.accessToken}',
-    //     'Content-Type': 'application/json',
-    //   },
-    //   body: matchId != null ? jsonEncode({'matchId': matchId}) : null,
-    // );
+    if (response.statusCode != 200) {
+      throw Exception('Ably token request failed: ${response.statusCode}');
+    }
 
-    final data = response.data is String
-        ? jsonDecode(response.data as String)
-        : response.data;
-
+    final data = jsonDecode(response.body);
     final tokenReqData = data['tokenRequest'] as Map<String, dynamic>;
 
     return ably.TokenRequest.fromMap(tokenReqData);
@@ -321,7 +364,6 @@ class AblyService {
 
   Future<void> _requestTokenForMatch(String matchId) async {
     // Re-authenticate with match-scoped capability
-    // The Ably SDK will use the updated token on next connection refresh
     await _requestToken(matchId: matchId);
   }
 }

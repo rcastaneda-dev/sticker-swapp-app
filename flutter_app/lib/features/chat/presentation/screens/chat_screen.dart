@@ -1,9 +1,13 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+
 import 'package:flutter_app/features/auth/data/providers/auth_providers.dart';
-import 'package:flutter_app/features/chat/data/services/chat_service.dart';
+import 'package:flutter_app/features/chat/data/providers/chat_providers.dart';
+import 'package:flutter_app/features/chat/presentation/widgets/chat_bubble.dart';
+import 'package:flutter_app/features/chat/presentation/widgets/chat_input_bar.dart';
+import 'package:flutter_app/features/chat/presentation/widgets/connection_status_banner.dart';
+import 'package:flutter_app/features/chat/presentation/widgets/typing_indicator.dart';
 import 'package:flutter_app/shared/shared.dart';
-import 'package:ably_flutter/ably_flutter.dart';
 
 class ChatScreen extends ConsumerStatefulWidget {
   final String matchId;
@@ -15,38 +19,39 @@ class ChatScreen extends ConsumerStatefulWidget {
 }
 
 class _ChatScreenState extends ConsumerState<ChatScreen> {
-  final ChatService _chatService = ChatService();
-  final TextEditingController _controller = TextEditingController();
-
-  final List<String> _messages = [];
+  final _textController = TextEditingController();
+  final _scrollController = ScrollController();
+  bool _initialized = false;
+  ChatNotifier? _notifier;
 
   @override
-  void initState() {
-    super.initState();
-    final isUnder13 = ref.read(isUnder13Provider) ?? false;
-    if (!isUnder13) {
-      _initChat();
-    }
+  void dispose() {
+    _textController.dispose();
+    _scrollController.dispose();
+    _notifier?.cleanup();
+    super.dispose();
   }
 
-  Future<void> _initChat() async {
-    await _chatService.connect();
-
-    _chatService.subscribeToMessages(widget.matchId).listen((Message message) {
-      setState(() {
-        _messages.add(message.data.toString());
-      });
+  void _scrollToBottom() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (_scrollController.hasClients) {
+        _scrollController.animateTo(
+          _scrollController.position.maxScrollExtent,
+          duration: SwappTokens.animationFast,
+          curve: Curves.easeOut,
+        );
+      }
     });
   }
 
-  Future<void> _sendMessage() async {
-    final text = _controller.text.trim();
-
-    if (text.isEmpty) return;
-
-    await _chatService.sendMessage(widget.matchId, text);
-
-    _controller.clear();
+  String _formatTimestamp(DateTime dt) {
+    final now = DateTime.now();
+    final time =
+        '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
+    if (dt.day == now.day && dt.month == now.month && dt.year == now.year) {
+      return time;
+    }
+    return '${dt.month}/${dt.day} $time';
   }
 
   @override
@@ -66,46 +71,136 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       );
     }
 
+    final chatState = ref.watch(chatProvider(widget.matchId));
+    final currentUserId = ref.watch(currentUserIdProvider);
+
+    // Initialize once after first build
+    if (!_initialized) {
+      _initialized = true;
+      _notifier = ref.read(chatProvider(widget.matchId).notifier);
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _notifier?.initialize();
+      });
+    }
+
+    // Auto-scroll when new messages arrive
+    ref.listen<ChatState>(chatProvider(widget.matchId), (previous, next) {
+      if (previous != null && next.messages.length > previous.messages.length) {
+        _scrollToBottom();
+      }
+    });
+
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Trade Chat'),
+        title: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('Trade Chat'),
+            if (chatState.otherUserOnline)
+              Text(
+                chatState.otherUserTyping ? 'typing...' : 'online',
+                style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                      color: SwappColors.pitchGreen,
+                    ),
+              ),
+          ],
+        ),
       ),
       body: Column(
         children: [
-          /// Messages
+          ConnectionStatusBanner(matchId: widget.matchId),
+
+          // Messages
           Expanded(
-            child: ListView.builder(
-              itemCount: _messages.length,
-              itemBuilder: (context, index) {
-                return ListTile(
-                  title: Text(_messages[index]),
-                );
-              },
-            ),
+            child: chatState.isLoadingHistory
+                ? const Center(child: CircularProgressIndicator())
+                : _buildMessageList(chatState, currentUserId),
           ),
 
-          /// Message input
-          Padding(
-            padding: const EdgeInsets.all(8.0),
-            child: Row(
-              children: [
-                Expanded(
-                  child: TextField(
-                    controller: _controller,
-                    decoration: const InputDecoration(
-                      hintText: 'Send a message...',
-                    ),
-                  ),
-                ),
-                IconButton(
-                  icon: const Icon(Icons.send),
-                  onPressed: _sendMessage,
-                ),
-              ],
+          // Typing indicator
+          if (chatState.otherUserTyping)
+            const Align(
+              alignment: Alignment.centerLeft,
+              child: TypingIndicator(),
             ),
+
+          // Input bar
+          ChatInputBar(
+            controller: _textController,
+            onSend: () {
+              final text = _textController.text;
+              if (text.trim().isEmpty) return;
+              ref
+                  .read(chatProvider(widget.matchId).notifier)
+                  .sendMessage(text);
+              _textController.clear();
+            },
+            onChanged: (text) {
+              ref
+                  .read(chatProvider(widget.matchId).notifier)
+                  .onTypingChanged(text);
+            },
+            enabled: chatState.connectionStatus ==
+                ChatConnectionStatus.connected,
           ),
         ],
       ),
+    );
+  }
+
+  Widget _buildMessageList(ChatState chatState, String? currentUserId) {
+    if (chatState.messages.isEmpty) {
+      return Center(
+        child: Text(
+          'No messages yet. Say hello!',
+          style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+              ),
+        ),
+      );
+    }
+
+    return ListView.builder(
+      controller: _scrollController,
+      padding: const EdgeInsets.symmetric(
+        horizontal: SwappTokens.spacingLg,
+        vertical: SwappTokens.spacingSm,
+      ),
+      itemCount: chatState.messages.length,
+      itemBuilder: (context, index) {
+        final message = chatState.messages[index];
+        final isMine = message.senderId == currentUserId;
+
+        // Show timestamp divider if gap > 5 minutes from previous message
+        final showTimestamp = index == 0 ||
+            message.timestamp
+                    .difference(chatState.messages[index - 1].timestamp)
+                    .inMinutes >
+                5;
+
+        return Column(
+          children: [
+            if (showTimestamp)
+              Padding(
+                padding: const EdgeInsets.symmetric(
+                    vertical: SwappTokens.spacingMd),
+                child: Text(
+                  _formatTimestamp(message.timestamp),
+                  style:
+                      Theme.of(context).textTheme.labelSmall?.copyWith(
+                            color: Theme.of(context)
+                                .colorScheme
+                                .onSurfaceVariant,
+                          ),
+                ),
+              ),
+            ChatBubble(
+              message: message,
+              isMine: isMine,
+            ),
+          ],
+        );
+      },
     );
   }
 }

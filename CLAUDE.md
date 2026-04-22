@@ -63,8 +63,16 @@ sticker-swapp-app/
 │   │   │   │   ├── presentation/screens/collection_progress_screen.dart
 │   │   │   │   └── stickers.dart          # Barrel export
 │   │   │   ├── chat/
-│   │   │   │   ├── data/services/
-│   │   │   │   └── presentation/screens/
+│   │   │   │   ├── data/
+│   │   │   │   │   ├── services/ably_service.dart        # Ably real-time service + ChatMessage model
+│   │   │   │   │   └── providers/chat_providers.dart     # ChatNotifier, ChatState, ablyServiceProvider
+│   │   │   │   └── presentation/
+│   │   │   │       ├── screens/chat_screen.dart           # Chat UI with message bubbles
+│   │   │   │       └── widgets/
+│   │   │   │           ├── chat_bubble.dart               # Sent/received message bubble
+│   │   │   │           ├── chat_input_bar.dart            # Text input + send button
+│   │   │   │           ├── connection_status_banner.dart  # Connection state indicator
+│   │   │   │           └── typing_indicator.dart          # Animated typing dots
 │   │   │   └── matching/
 │   │   │       ├── data/
 │   │   │       │   └── providers/
@@ -338,6 +346,40 @@ JWT expiry: 15 min (900s in config.toml) with refresh token rotation (10s reuse 
 - `flutter_app/lib/features/matching/presentation/widgets/trader_card.dart` — Card content
 - `flutter_app/lib/features/matching/presentation/widgets/match_celebration_overlay.dart` — Mutual match overlay
 - `flutter_app/lib/features/matching/presentation/screens/matches_screen.dart` — Screen integrating all above
+
+## Chat Screen
+
+**Route:** `/matches/:matchId/chat` — Real-time chat between matched traders. Under-13 users see `SwappRestrictedEmptyState`.
+
+**Real-time engine:** Ably Pro via `AblyService` (token auth through Go backend `/api/v1/ably/auth`). Event name: `chat.message`. Messages persisted to PostgreSQL via Ably webhook Edge Function (`ably-webhook`).
+
+**Message history:** On join, `channel.history()` loads up to 50 recent messages (24h configured on Ably Dashboard). Live messages arrive via `channel.subscribe(name: 'chat.message')`.
+
+**Typing indicators:** Ably presence data updates. `channel.presence.update({isTyping: true/false})`. 3-second debounce auto-clears. Cleaned up on disconnect.
+
+**Connection status:** `ConnectionStatusBanner` watches `connection.on()` stream. Shows connecting/reconnecting/disconnected/failed states below AppBar. Hidden when connected.
+
+**Message bubbles:** Sent messages: right-aligned, primary (navy) background, white text. Received: left-aligned, `surfaceContainerHighest` background. Timestamp dividers appear when messages are >5 min apart. Max bubble width 75%.
+
+**Auto-scroll:** `ref.listen` watches `chatProvider` message count; `ScrollController.animateTo(maxScrollExtent)` on new messages.
+
+**Models:**
+- `ChatMessage` — senderId (from Ably clientId), body (from `{text: "..."}` payload), timestamp, matchId
+
+**Providers:**
+- `ablyServiceProvider` — Provider<AblyService> singleton
+- `chatProvider` — NotifierProvider.family<ChatNotifier, ChatState, String> (matchId). State machine: initializing → loading history → connected. Optimistic message adds. Presence-based typing/online tracking. Message deduplication (history vs live).
+- `chatConnectedProvider` — Provider.family<bool, String>: convenience connected check
+- `otherUserTypingProvider` — Provider.family<bool, String>: convenience typing check
+
+**Key files:**
+- `flutter_app/lib/features/chat/data/services/ably_service.dart` — Ably real-time service + ChatMessage model
+- `flutter_app/lib/features/chat/data/providers/chat_providers.dart` — Riverpod state management
+- `flutter_app/lib/features/chat/presentation/screens/chat_screen.dart` — Chat screen
+- `flutter_app/lib/features/chat/presentation/widgets/chat_bubble.dart` — Message bubble
+- `flutter_app/lib/features/chat/presentation/widgets/chat_input_bar.dart` — Input bar with send button
+- `flutter_app/lib/features/chat/presentation/widgets/connection_status_banner.dart` — Connection indicator
+- `flutter_app/lib/features/chat/presentation/widgets/typing_indicator.dart` — Animated dots
 
 ## Push Notifications
 

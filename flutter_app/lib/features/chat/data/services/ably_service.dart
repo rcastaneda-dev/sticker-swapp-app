@@ -281,6 +281,31 @@ class AblyService {
     await controller?.close();
   }
 
+  /// Subscribes to a specific event type on a match channel.
+  ///
+  /// Returns a stream of decoded event data, or null if the channel
+  /// has not been joined yet. The channel must be joined first via
+  /// [joinMatchChannel].
+  Stream<Map<String, dynamic>>? subscribeToEvent(
+      String matchId, String eventName) {
+    final channelName = 'match:$matchId';
+    final channel = _channels[channelName];
+    if (channel == null) return null;
+
+    final controller = StreamController<Map<String, dynamic>>.broadcast();
+    channel.subscribe(name: eventName).listen((msg) {
+      try {
+        final data = msg.data is String
+            ? jsonDecode(msg.data as String) as Map<String, dynamic>
+            : msg.data as Map<String, dynamic>;
+        controller.add(data);
+      } catch (e) {
+        debugPrint('Error parsing $eventName event: $e');
+      }
+    });
+    return controller.stream;
+  }
+
   /// Subscribes to the user's personal notification channel.
   ///
   /// This channel receives server-pushed events like new match alerts

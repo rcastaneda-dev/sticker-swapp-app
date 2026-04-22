@@ -35,6 +35,7 @@ type RouterConfig struct {
 	AblyPublisher        ably.Publisher
 	InventoryLocker      trades.InventoryLocker
 	TradeExecutor        trades.TradeExecutor
+	TradeConfirmer       trades.TradeConfirmer
 }
 
 // NewRouter constructs a Chi router with all routes and middleware.
@@ -102,6 +103,21 @@ func NewRouter(cfg RouterConfig) chi.Router {
 			)
 			r.Post("/", tradeHandler.LockInventory)
 			r.Delete("/", tradeHandler.ReleaseInventory)
+		})
+
+		// Trade confirmation — both users must confirm to complete
+		confirmHandler := NewConfirmHandler(cfg.TradeConfirmer, cfg.AblyPublisher)
+		r.Route("/matches/{matchId}/confirm", func(r chi.Router) {
+			r.Use(
+				middleware.RateLimit(120, 60),
+				middleware.VerifyAttestation(cfg.AttestationVerifier, cfg.AttestationDisabled),
+				middleware.ReplayGuard(cfg.NonceStore, replayCfg, cfg.ReplayGuardDisabled),
+				middleware.ValidateJWT(cfg.SupabaseURL, cfg.SupabaseSecret),
+				middleware.ReadDeviceIntegrity(),
+				middleware.RequireAge13Plus(),
+			)
+			r.Post("/", confirmHandler.ConfirmTrade)
+			r.Get("/", confirmHandler.GetConfirmationState)
 		})
 
 		// WebSocket — JWT + age gate, no attestation or replay guard (connection pipe only)

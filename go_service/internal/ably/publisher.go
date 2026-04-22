@@ -11,6 +11,7 @@ import (
 // Publisher publishes server-side events to Ably channels.
 type Publisher interface {
 	PublishMatchCreated(ctx context.Context, matchID string, event MatchCreatedEvent) error
+	PublishTradeConfirmed(ctx context.Context, matchID string, event TradeConfirmedEvent) error
 }
 
 // MatchCreatedEvent is the payload for the match channel creation event.
@@ -20,6 +21,14 @@ type MatchCreatedEvent struct {
 	User2ID   string `json:"user2_id"`
 	Status    string `json:"status"`
 	CreatedAt string `json:"created_at"`
+}
+
+// TradeConfirmedEvent is the payload for a trade confirmation event.
+type TradeConfirmedEvent struct {
+	MatchID       string `json:"match_id"`
+	ConfirmedBy   string `json:"confirmed_by"`
+	BothConfirmed bool   `json:"both_confirmed"`
+	MatchStatus   string `json:"match_status"`
 }
 
 // RESTPublisher publishes events via the Ably REST SDK.
@@ -54,11 +63,35 @@ func (p *RESTPublisher) PublishMatchCreated(ctx context.Context, matchID string,
 	return nil
 }
 
+// PublishTradeConfirmed publishes a trade confirmation event to the match channel.
+func (p *RESTPublisher) PublishTradeConfirmed(ctx context.Context, matchID string, event TradeConfirmedEvent) error {
+	channelName := fmt.Sprintf("match:%s", matchID)
+	channel := p.client.Channels.Get(channelName)
+
+	err := channel.Publish(ctx, "trade.confirmed", event)
+	if err != nil {
+		return fmt.Errorf("publish trade.confirmed to %s: %w", channelName, err)
+	}
+
+	slog.Info("Published trade.confirmed event",
+		"channel", channelName,
+		"match_id", matchID,
+		"confirmed_by", event.ConfirmedBy,
+		"both_confirmed", event.BothConfirmed,
+	)
+	return nil
+}
+
 // NoopPublisher silently succeeds (for dev/test when Ably is disabled).
 type NoopPublisher struct{}
 
 // PublishMatchCreated is a no-op.
 func (n *NoopPublisher) PublishMatchCreated(_ context.Context, _ string, _ MatchCreatedEvent) error {
+	return nil
+}
+
+// PublishTradeConfirmed is a no-op.
+func (n *NoopPublisher) PublishTradeConfirmed(_ context.Context, _ string, _ TradeConfirmedEvent) error {
 	return nil
 }
 

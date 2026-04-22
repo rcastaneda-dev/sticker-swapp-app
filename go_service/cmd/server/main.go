@@ -69,9 +69,10 @@ func main() {
 	// Initialize match creator
 	matchCreator := matches.NewMatchCreator(pool)
 
-	// Initialize inventory locker and trade executor
+	// Initialize inventory locker, trade executor, and trade confirmer
 	inventoryLocker := trades.NewInventoryLocker(pool)
 	tradeExecutor := trades.NewTradeExecutor(pool)
+	tradeConfirmer := trades.NewTradeConfirmer(pool)
 
 	// Initialize push notifications — optional (NoopNotifier if credentials missing)
 	var pushNotifier onesignal.Notifier
@@ -133,6 +134,7 @@ func main() {
 		AblyPublisher:       ablyPublisher,
 		InventoryLocker:     inventoryLocker,
 		TradeExecutor:       tradeExecutor,
+		TradeConfirmer:      tradeConfirmer,
 	})
 
 	// Start HTTP server

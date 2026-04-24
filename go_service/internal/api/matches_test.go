@@ -104,6 +104,10 @@ func (m *mockPublisher) PublishMatchCreated(_ context.Context, matchID string, e
 	return m.err
 }
 
+func (m *mockPublisher) PublishTradeConfirmed(_ context.Context, _ string, _ ably.TradeConfirmedEvent) error {
+	return nil
+}
+
 func newTestHandler(creator matches.MatchCreator) *MatchHandler {
 	return NewMatchHandler(creator, newMockNotifier(), &mockDisplayNameLookup{}, newMockPublisher())
 }

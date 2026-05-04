@@ -1,12 +1,41 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:supabase_flutter/supabase_flutter.dart' hide AuthState;
+import 'package:flutter_app/features/auth/data/providers/auth_providers.dart';
 import 'package:flutter_app/features/stickers/data/services/user_inventory_service.dart';
 import 'package:flutter_app/features/stickers/data/providers/user_inventory_providers.dart';
 
 // ── Fake Service ────────────────────────────────────────────────────
 
+class _StubAuthStateNotifier extends AuthStateNotifier {
+  final AppAuthState _initial;
+  _StubAuthStateNotifier(this._initial);
+
+  @override
+  AppAuthState build() => _initial;
+}
+
+AuthAuthenticated _authenticated() {
+  final user = User(
+    id: 'test-user-id',
+    appMetadata: {},
+    userMetadata: {'age_verified_at': '2024-01-01'},
+    aud: 'authenticated',
+    createdAt: DateTime.now().toIso8601String(),
+  );
+  return AuthAuthenticated(
+    user: user,
+    session: Session(
+      accessToken: 'fake-token',
+      tokenType: 'bearer',
+      user: user,
+    ),
+  );
+}
+
 class _FakeUserInventoryService extends UserInventoryService {
   Set<int> ownedIds;
+  Set<int> reservedIds;
   bool shouldThrow;
   int toggleCallCount = 0;
   int? lastToggledId;
@@ -14,7 +43,9 @@ class _FakeUserInventoryService extends UserInventoryService {
 
   _FakeUserInventoryService({
     Set<int>? ownedIds,
+    Set<int>? reservedIds,
   })  : ownedIds = ownedIds ?? {},
+        reservedIds = reservedIds ?? {},
         shouldThrow = false,
         super(client: null);
 
@@ -34,6 +65,12 @@ class _FakeUserInventoryService extends UserInventoryService {
     } else {
       ownedIds = Set.from(ownedIds)..add(stickerId);
     }
+  }
+
+  @override
+  Future<Set<int>> fetchReservedStickerIds() async {
+    if (shouldThrow) throw Exception('fetch reserved failed');
+    return Set.from(reservedIds);
   }
 
   @override
@@ -145,6 +182,62 @@ void main() {
 
       final notifier = container.read(userInventoryProvider.notifier);
       expect(notifier.ownedCount, 3);
+    });
+  });
+
+  group('reservedStickersProvider', () {
+    test('returns empty set when unauthenticated', () async {
+      final container = ProviderContainer(
+        overrides: [
+          authStateProvider.overrideWith(
+            () => _StubAuthStateNotifier(const AuthUnauthenticated()),
+          ),
+        ],
+      );
+      addTearDown(container.dispose);
+
+      final result = await container.read(reservedStickersProvider.future);
+      expect(result, isEmpty);
+    });
+
+    test('returns reserved IDs when authenticated', () async {
+      final fakeService = _FakeUserInventoryService(
+        ownedIds: {1, 2, 3},
+        reservedIds: {2, 3},
+      );
+
+      final container = ProviderContainer(
+        overrides: [
+          authStateProvider.overrideWith(
+            () => _StubAuthStateNotifier(_authenticated()),
+          ),
+          userInventoryServiceProvider.overrideWithValue(fakeService),
+        ],
+      );
+      addTearDown(container.dispose);
+
+      final result = await container.read(reservedStickersProvider.future);
+      expect(result, {2, 3});
+    });
+
+    test('returns empty set when no stickers are reserved', () async {
+      final fakeService = _FakeUserInventoryService(
+        ownedIds: {1, 2, 3},
+        reservedIds: {},
+      );
+
+      final container = ProviderContainer(
+        overrides: [
+          authStateProvider.overrideWith(
+            () => _StubAuthStateNotifier(_authenticated()),
+          ),
+          userInventoryServiceProvider.overrideWithValue(fakeService),
+        ],
+      );
+      addTearDown(container.dispose);
+
+      final result = await container.read(reservedStickersProvider.future);
+      expect(result, isEmpty);
     });
   });
 }

@@ -8,6 +8,7 @@ import 'package:flutter_app/features/auth/presentation/screens/parental_consent_
 import 'package:flutter_app/features/auth/presentation/screens/guest_migration_screen.dart';
 import 'package:flutter_app/features/matching/presentation/screens/match_screen.dart';
 import 'package:flutter_app/features/matching/presentation/screens/matches_screen.dart';
+import 'package:flutter_app/features/matching/presentation/screens/trade_history_screen.dart';
 import 'package:flutter_app/features/chat/presentation/screens/chat_screen.dart';
 import 'package:flutter_app/features/stickers/presentation/screens/sticker_catalog_screen.dart';
 import 'package:flutter_app/features/stickers/presentation/screens/collection_progress_screen.dart';
@@ -115,6 +116,11 @@ final routerProvider = Provider<GoRouter>((ref) {
         name: 'matches',
         builder: (context, state) => const MatchesScreen(),
         routes: [
+          GoRoute(
+            path: 'history',
+            name: 'trade-history',
+            builder: (context, state) => const TradeHistoryScreen(),
+          ),
           GoRoute(
             path: ':matchId',
             name: 'match',

@@ -1,4 +1,7 @@
+import 'dart:async';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_app/features/auth/data/providers/auth_providers.dart';
 import '../services/user_inventory_service.dart';
 
 /// Singleton provider for [UserInventoryService].
@@ -54,3 +57,21 @@ final userInventoryProvider =
     AsyncNotifierProvider<UserInventoryNotifier, Set<int>>(
   UserInventoryNotifier.new,
 );
+
+/// Provides the set of sticker IDs currently reserved for active trades.
+///
+/// Returns an empty set for unauthenticated users.
+/// Auto-invalidates every 60 seconds to pick up lock expiry.
+final reservedStickersProvider = FutureProvider<Set<int>>((ref) async {
+  final authState = ref.watch(authStateProvider);
+  if (authState is! AuthAuthenticated) return {};
+
+  // Auto-invalidate every 60s to pick up lock expiry
+  final timer = Timer(const Duration(seconds: 60), () {
+    ref.invalidateSelf();
+  });
+  ref.onDispose(timer.cancel);
+
+  final service = ref.watch(userInventoryServiceProvider);
+  return service.fetchReservedStickerIds();
+});

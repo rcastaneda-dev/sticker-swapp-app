@@ -45,6 +45,17 @@ class UserInventoryService {
     }
   }
 
+  /// Fetch the set of sticker IDs currently reserved for an active trade.
+  Future<Set<int>> fetchReservedStickerIds() async {
+    final response = await _client
+        .from('user_inventory')
+        .select('sticker_id')
+        .eq('trade_status', 'RESERVED');
+    return (response as List)
+        .map((row) => row['sticker_id'] as int)
+        .toSet();
+  }
+
   /// Create a shareable wishlist link. Returns the share token.
   Future<String> createWishlistShare() async {
     final result = await _client.rpc('create_wishlist_share');

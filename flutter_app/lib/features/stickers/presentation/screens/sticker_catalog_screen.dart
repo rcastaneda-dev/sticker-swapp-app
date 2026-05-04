@@ -5,6 +5,7 @@ import 'package:flutter_app/shared/shared.dart';
 import '../../data/models/sticker.dart';
 import '../../data/providers/sticker_providers.dart';
 import '../../data/providers/effective_inventory_providers.dart';
+import '../../data/providers/user_inventory_providers.dart';
 
 class StickerCatalogScreen extends ConsumerWidget {
   const StickerCatalogScreen({super.key});
@@ -420,6 +421,8 @@ class _StickerGridTile extends ConsumerWidget {
     final textTheme = Theme.of(context).textTheme;
     final inventoryAsync = ref.watch(effectiveInventoryProvider);
     final isOwned = inventoryAsync.value?.contains(sticker.id) ?? false;
+    final reservedAsync = ref.watch(reservedStickersProvider);
+    final isReserved = reservedAsync.value?.contains(sticker.id) ?? false;
 
     return GestureDetector(
       onTap: () => toggleEffectiveSticker(ref, sticker.id),
@@ -463,7 +466,27 @@ class _StickerGridTile extends ConsumerWidget {
                 ),
               ],
             ),
-            if (isOwned)
+            if (isReserved)
+              Positioned(
+                top: 2,
+                right: 2,
+                child: Tooltip(
+                  message: 'Reserved for an active trade',
+                  child: Container(
+                    decoration: BoxDecoration(
+                      color: colorScheme.secondary,
+                      shape: BoxShape.circle,
+                    ),
+                    padding: const EdgeInsets.all(2),
+                    child: Icon(
+                      Icons.lock,
+                      size: 12,
+                      color: colorScheme.onSecondary,
+                    ),
+                  ),
+                ),
+              )
+            else if (isOwned)
               Positioned(
                 top: 2,
                 right: 2,

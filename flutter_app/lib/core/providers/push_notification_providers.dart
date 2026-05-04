@@ -1,6 +1,7 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_app/core/router/app_router.dart';
 import 'package:flutter_app/core/services/push_notification_service.dart';
+import 'package:flutter_app/core/providers/deep_link_providers.dart';
 import 'package:flutter_app/features/auth/data/providers/auth_providers.dart';
 import 'package:flutter_app/features/matching/data/providers/match_notification_providers.dart';
 
@@ -27,10 +28,16 @@ final pushNotificationLifecycleProvider = Provider<void>((ref) {
   final authState = ref.watch(authStateProvider);
   final isUnder13 = ref.watch(isUnder13Provider);
 
-  // Wire tap handler → navigate to match screen
+  // Wire tap handler → navigate to match screen (or store for post-onboarding)
   pushService.onNotificationOpened = (matchId) {
+    final destination = '/matches/$matchId';
+
+    // Store the destination in case user needs onboarding first
+    ref.read(deepLinkProvider.notifier).setPendingDestination(destination);
+
+    // Try to navigate (router will redirect to onboarding if needed)
     final router = ref.read(routerProvider);
-    router.push('/matches/$matchId');
+    router.push(destination);
   };
 
   // Wire foreground handler → feed into in-app notification system

@@ -1,5 +1,6 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:flutter_app/core/providers/deep_link_providers.dart';
 import 'package:flutter_app/features/auth/data/providers/auth_providers.dart';
 import 'package:flutter_app/features/auth/data/providers/guest_migration_providers.dart';
 import 'package:flutter_app/features/auth/presentation/screens/login_screen.dart';
@@ -18,6 +19,20 @@ final routerProvider = Provider<GoRouter>((ref) {
   final isAgeVerified = ref.watch(ageVerifiedProvider) ?? false;
   final needsConsent = ref.watch(needsParentalConsentProvider);
   final needsMigration = ref.watch(needsGuestMigrationProvider);
+
+  /// Helper: consume pending deep link if all onboarding is complete.
+  String _getDefaultDestination() {
+    final isAuth = authState is AuthAuthenticated;
+    final onboardingComplete = isAuth && isAgeVerified && !needsMigration && !needsConsent;
+
+    if (onboardingComplete) {
+      final pendingLink = ref.read(deepLinkProvider.notifier).consume();
+      if (pendingLink != null) {
+        return pendingLink;
+      }
+    }
+    return '/matches';
+  }
 
   return GoRouter(
     initialLocation: '/matches',
@@ -42,7 +57,7 @@ final routerProvider = Provider<GoRouter>((ref) {
         if (!isAgeVerified) return '/age-verification';
         if (needsMigration) return '/guest-migration';
         if (needsConsent) return '/parental-consent';
-        return '/matches';
+        return _getDefaultDestination();
       }
 
       // Logged in + not verified + not on verification screen → verify
@@ -53,7 +68,7 @@ final routerProvider = Provider<GoRouter>((ref) {
       // Logged in + verified + on verification screen → move forward
       if (isAuth && isAgeVerified && isAgeVerificationRoute) {
         if (needsMigration) return '/guest-migration';
-        return needsConsent ? '/parental-consent' : '/matches';
+        return needsConsent ? '/parental-consent' : _getDefaultDestination();
       }
 
       // Logged in + verified + needs migration + not on migration screen
@@ -63,7 +78,7 @@ final routerProvider = Provider<GoRouter>((ref) {
 
       // Logged in + verified + migration done + on migration screen → advance
       if (isAuth && isAgeVerified && !needsMigration && isMigrationRoute) {
-        return needsConsent ? '/parental-consent' : '/matches';
+        return needsConsent ? '/parental-consent' : _getDefaultDestination();
       }
 
       // Logged in + verified + needs consent + not on consent screen → consent
@@ -73,7 +88,7 @@ final routerProvider = Provider<GoRouter>((ref) {
 
       // Logged in + verified + has consent (or 13+) + on consent screen → main app
       if (isAuth && isAgeVerified && !needsConsent && isConsentRoute) {
-        return '/matches';
+        return _getDefaultDestination();
       }
 
       return null;

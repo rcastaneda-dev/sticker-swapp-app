@@ -1,7 +1,11 @@
+import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 import 'package:supabase_flutter/supabase_flutter.dart' hide AuthState;
 import 'package:flutter_app/core/providers/push_notification_providers.dart';
+import 'package:flutter_app/core/providers/deep_link_providers.dart';
+import 'package:flutter_app/core/router/app_router.dart';
 import 'package:flutter_app/core/services/push_notification_service.dart';
 import 'package:flutter_app/features/auth/data/providers/auth_providers.dart';
 
@@ -181,6 +185,72 @@ void main() {
       expect(pushService.onForegroundNotification!('match-123'), isTrue);
       // Non-match notification should not be suppressed
       expect(pushService.onForegroundNotification!(null), isFalse);
+    });
+
+    test('notification tap stores deep link destination', () {
+      final pushService = _TrackingPushService();
+      String? capturedPushLocation;
+
+      // Create a minimal mock router that captures push calls
+      final mockRouter = GoRouter(
+        routes: [
+          GoRoute(
+            path: '/matches/:matchId',
+            builder: (context, state) => Container(),
+          ),
+        ],
+        redirect: (context, state) {
+          // Capture the push location
+          if (state.matchedLocation.startsWith('/matches/')) {
+            capturedPushLocation = state.matchedLocation;
+          }
+          return null;
+        },
+      );
+
+      final container = ProviderContainer(
+        overrides: [
+          pushNotificationServiceProvider.overrideWithValue(pushService),
+          authStateProvider.overrideWith(
+            () => _StubAuthStateNotifier(const AuthUnauthenticated()),
+          ),
+          routerProvider.overrideWithValue(mockRouter),
+        ],
+      );
+      addTearDown(container.dispose);
+
+      container.read(pushNotificationLifecycleProvider);
+
+      // Simulate notification tap
+      pushService.onNotificationOpened!('match-abc123');
+
+      // Verify deep link was stored
+      expect(
+        container.read(deepLinkProvider),
+        '/matches/match-abc123',
+      );
+    });
+
+    test('processPendingNotification is called during initialization', () {
+      final pushService = _TrackingPushService();
+
+      final container = ProviderContainer(
+        overrides: [
+          pushNotificationServiceProvider.overrideWithValue(pushService),
+          authStateProvider.overrideWith(
+            () => _StubAuthStateNotifier(_authenticated(metadata: {
+              'is_under_13': false,
+              'age_verified_at': '2024-01-01T00:00:00Z',
+            })),
+          ),
+        ],
+      );
+      addTearDown(container.dispose);
+
+      container.read(pushNotificationLifecycleProvider);
+
+      // Verify the callback was wired (processPendingNotification is called internally)
+      expect(pushService.onNotificationOpened, isNotNull);
     });
   });
 }

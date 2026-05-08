@@ -4,6 +4,14 @@ dev:
 test:
 	cd go_service && go test ./...
 
+test-integration:
+	set -a && source .env && set +a && \
+	cd go_service && go test -tags=integration -race -count=1 -timeout=120s ./internal/trades/...
+
+test-loadtest:
+	set -a && source .env && set +a && \
+	cd go_service && go test -tags=integration -count=1 -timeout=1800s -v -run TestLoadProximityQueries ./internal/matchmaking/...
+
 migrate:
 	cd supabase && supabase db reset
 

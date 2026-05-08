@@ -2,6 +2,44 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_app/core/services/push_notification_service.dart';
 
 void main() {
+  group('isValidUuid', () {
+    test('accepts valid UUID v4', () {
+      expect(isValidUuid('550e8400-e29b-41d4-a716-446655440000'), isTrue);
+    });
+
+    test('accepts uppercase UUID', () {
+      expect(isValidUuid('550E8400-E29B-41D4-A716-446655440000'), isTrue);
+    });
+
+    test('accepts mixed-case UUID', () {
+      expect(isValidUuid('550e8400-E29B-41d4-A716-446655440000'), isTrue);
+    });
+
+    test('rejects empty string', () {
+      expect(isValidUuid(''), isFalse);
+    });
+
+    test('rejects plain text', () {
+      expect(isValidUuid('not-a-uuid'), isFalse);
+    });
+
+    test('rejects UUID without dashes', () {
+      expect(isValidUuid('550e8400e29b41d4a716446655440000'), isFalse);
+    });
+
+    test('rejects path traversal attempt', () {
+      expect(isValidUuid('../../../etc/passwd'), isFalse);
+    });
+
+    test('rejects script injection attempt', () {
+      expect(isValidUuid('<script>alert(1)</script>'), isFalse);
+    });
+
+    test('rejects UUID with extra characters', () {
+      expect(isValidUuid('550e8400-e29b-41d4-a716-446655440000-extra'), isFalse);
+    });
+  });
+
   group('PushNotificationService', () {
     test('initialize calls initOverride with appId', () async {
       String? capturedAppId;

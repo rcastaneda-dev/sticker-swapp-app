@@ -12,6 +12,15 @@ typedef NotificationOpenedCallback = void Function(String matchId);
 /// Return `true` to suppress the OS notification display.
 typedef ForegroundNotificationCallback = bool Function(String? matchId);
 
+/// UUID regex for validating match IDs from push notification payloads.
+final _uuidRegex = RegExp(
+  r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$',
+);
+
+/// Returns true if [value] is a valid UUID string.
+/// Used to validate match IDs from untrusted sources (push notifications).
+bool isValidUuid(String value) => _uuidRegex.hasMatch(value);
+
 /// Push notification service using OneSignal + FCM.
 ///
 /// Initialized at app startup for all users, but user association
@@ -70,7 +79,7 @@ class PushNotificationService {
     OneSignal.Notifications.addClickListener((event) {
       final matchId =
           event.notification.additionalData?['match_id'] as String?;
-      if (matchId == null) return;
+      if (matchId == null || !_uuidRegex.hasMatch(matchId)) return;
 
       if (onNotificationOpened != null) {
         onNotificationOpened!(matchId);
@@ -81,8 +90,12 @@ class PushNotificationService {
 
     // Foreground notification handler
     OneSignal.Notifications.addForegroundWillDisplayListener((event) {
-      final matchId =
+      final rawMatchId =
           event.notification.additionalData?['match_id'] as String?;
+      final matchId =
+          (rawMatchId != null && _uuidRegex.hasMatch(rawMatchId))
+              ? rawMatchId
+              : null;
 
       if (onForegroundNotification != null) {
         final suppress = onForegroundNotification!(matchId);

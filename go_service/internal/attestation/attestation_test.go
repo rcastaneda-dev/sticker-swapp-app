@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -101,6 +102,61 @@ func TestVerifyAndroid_APIError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for API error response, got nil")
 	}
+}
+
+func TestVerifyAndroid_TokenWithSpecialChars(t *testing.T) {
+	// Verify that tokens containing JSON-breaking characters are safely marshalled
+	// (prevents JSON injection via fmt.Sprintf → json.Marshal fix)
+	var receivedBody string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := readBody(r)
+		receivedBody = body
+
+		// Parse the request body to verify it's valid JSON
+		var req map[string]string
+		if err := json.Unmarshal([]byte(body), &req); err != nil {
+			t.Errorf("request body is not valid JSON: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+
+		// Return a valid verdict so we can inspect the request
+		payload := playIntegrityPayload{}
+		payload.TokenPayloadExternal.AppIntegrity.AppRecognitionVerdict = "PLAY_RECOGNIZED"
+		payload.TokenPayloadExternal.DeviceIntegrity.DeviceRecognitionVerdict = []string{
+			"MEETS_DEVICE_INTEGRITY",
+		}
+		json.NewEncoder(w).Encode(payload)
+	}))
+	defer server.Close()
+
+	v := NewVerifier("123456789", "")
+	v.playIntegrityURL = server.URL
+	v.httpClient = server.Client()
+
+	// Token with characters that would break fmt.Sprintf JSON construction
+	maliciousToken := `","evil":"injected","x":"`
+	err := v.VerifyAndroid(context.Background(), maliciousToken)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Verify the token was properly escaped in the JSON body
+	var parsed map[string]string
+	if err := json.Unmarshal([]byte(receivedBody), &parsed); err != nil {
+		t.Fatalf("response body is not valid JSON: %v", err)
+	}
+	if parsed["integrity_token"] != maliciousToken {
+		t.Errorf("token was not properly preserved: got %q, want %q", parsed["integrity_token"], maliciousToken)
+	}
+}
+
+func readBody(r *http.Request) (string, error) {
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		return "", err
+	}
+	return string(body), nil
 }
 
 // --- iOS (App Attest) Tests ---

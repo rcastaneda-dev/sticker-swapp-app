@@ -86,8 +86,11 @@ func (v *Verifier) VerifyAndroid(ctx context.Context, token string) error {
 	// Call Play Integrity API to decode the token
 	url := fmt.Sprintf("%s/%s:decodeIntegrityToken", v.playIntegrityURL, v.googleProjectNumber)
 
-	body := fmt.Sprintf(`{"integrity_token":"%s"}`, token)
-	req, err := http.NewRequestWithContext(ctx, "POST", url, strings.NewReader(body))
+	reqBody, err := json.Marshal(map[string]string{"integrity_token": token})
+	if err != nil {
+		return fmt.Errorf("attestation: failed to marshal request body: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, "POST", url, strings.NewReader(string(reqBody)))
 	if err != nil {
 		return fmt.Errorf("attestation: failed to build request: %w", err)
 	}

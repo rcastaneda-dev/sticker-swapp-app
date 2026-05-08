@@ -554,6 +554,35 @@ Rate limits: 120 req/min (authenticated), 30 req/min (guest). Returns 429 with `
 - `supabase/migrations/0028_optimize_find_nearby_traders_benchmark.sql` — Benchmark setup (3 variant functions, trigger, columns)
 - `supabase/migrations/0029_apply_denormalized_nearby_traders.sql` — Applied winner, dropped temporary objects
 
+### Ably WebSocket Load Test
+
+**Purpose:** Validate 10K concurrent Ably WebSocket connections with sustained 1K msg/sec throughput through the full Go service token auth flow.
+
+**Test flow (per client):** `POST /api/v1/ably/auth` (Go service) → signed `TokenRequest` → Ably Realtime SDK `WithAuthCallback` → WebSocket connected → subscribe to `loadtest:match:{N}` channel → publish/receive `chat.message` events with embedded nanosecond timestamps for latency measurement.
+
+**Parameters:**
+- 10,000 concurrent connections (overridable via `ABLY_LOADTEST_CONNECTIONS`)
+- 500 channels (~20 subscribers per channel)
+- 1,000 msg/sec target (2 msg/sec per channel)
+- 60s sustained messaging + 10s warmup
+- Connection batching: 100 clients per batch, 50ms inter-batch delay
+
+**Acceptance criteria:**
+- All 10K connections established (< 0.1% failure rate)
+- Sustained throughput >= 950 msg/sec (95% of target)
+- Delivery latency p95 < 100ms
+- Connection drops < 10 (< 0.1%)
+- Message delivery rate > 99.5%
+
+**Prerequisites:** `ABLY_API_KEY` in `.env` (test skips if missing). Ably Pro plan or higher (connection limits).
+
+**Run command:** `make test-ably-loadtest`
+
+**Smaller test run:** `ABLY_LOADTEST_CONNECTIONS=100 make test-ably-loadtest`
+
+**Key files:**
+- `go_service/internal/ably/loadtest_test.go` — Load test (integration tag)
+
 ## Match Creation (Swipe & Match)
 
 **Endpoint:** `POST /api/v1/matches` — record a right-swipe; if mutual, create a PENDING match.

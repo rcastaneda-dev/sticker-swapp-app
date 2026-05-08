@@ -12,6 +12,10 @@ test-loadtest:
 	set -a && source .env && set +a && \
 	cd go_service && go test -tags=integration -count=1 -timeout=1800s -v -run TestLoadProximityQueries ./internal/matchmaking/...
 
+test-ably-loadtest:
+	set -a && source .env && set +a && \
+	cd go_service && go test -tags=integration -count=1 -timeout=600s -v -run TestAblyWebSocketLoadTest ./internal/ably/...
+
 migrate:
 	cd supabase && supabase db reset
 
